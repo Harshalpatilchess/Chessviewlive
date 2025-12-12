@@ -75,6 +75,19 @@ Broadcast chess tournaments from mobile devices to your website with optional di
 ## Contact
 Harshal Patil — harshalpatilchess (GitHub profile)
 
+## Manifest Verification (Dev-only)
+- Set `ALLOW_DEV_MANIFEST_CHECK=true` in your environment (dev only).
+- Authenticate with an admin session or supply the header `x-admin-secret: $ADMIN_SECRET`.
+- Example curl:  
+  `curl -H "x-admin-secret: $ADMIN_SECRET" "http://localhost:3000/api/dev/manifest/check?boardId=7-1"`
+- The response lists MP4/manifest counts, any missing sidecars, and sample manifest data to inspect.
+
+## Recording Cleanup (Dev-only)
+- Set `ALLOW_DEV_CLEANUP=true` before starting the dev server (never enable in production).
+- Authenticate with an admin cookie or send the header `x-admin-secret: $ADMIN_SECRET`.
+- Dry-run example:  
+  `curl -H "x-admin-secret: $ADMIN_SECRET" "http://localhost:3000/api/dev/cleanup?boardId=7-1&olderThanDays=45"`
+- Provide `dryRun=0` when you actually want to delete old recordings; defaults to dry-run.
+
 ## License
 Proprietary prototype. Update when ready for public release.
->>>>>>> 26fd82807d1d3e10e59a1285f206b21ffe990933

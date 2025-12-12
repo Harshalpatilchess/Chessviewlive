@@ -67,7 +67,8 @@ export async function GET(req: NextRequest) {
     });
 
     return NextResponse.json({ ok: true, info });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || 'error' }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'error';
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }

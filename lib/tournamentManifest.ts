@@ -1,0 +1,467 @@
+export type FideTitle = "GM" | "IM" | "FM" | "CM" | "WGM" | "WIM" | "WFM" | "WCM" | null;
+
+export type GameResult = "1-0" | "0-1" | "½-½" | "1/2-1/2" | "·" | "*" | null;
+
+export type GameStatus = "live" | "final" | "scheduled" | "unknown";
+
+export type TournamentGame = {
+  tournamentSlug?: string;
+  round: number;
+  board: number;
+  white: string;
+  whiteTitle?: FideTitle;
+  whiteRating: number;
+  whiteCountry: string;
+  whiteFlag: string;
+  black: string;
+  blackTitle?: FideTitle;
+  blackRating: number;
+  blackCountry: string;
+  blackFlag: string;
+  result?: GameResult;
+  status?: GameStatus;
+  evaluation?: number | null;
+  whiteTimeMs?: number | null;
+  blackTimeMs?: number | null;
+  sideToMove?: "white" | "black" | null;
+  finalFen?: string | null;
+  moveList?: string[] | null;
+};
+
+export type TournamentGameLiveUpdate = {
+  tournamentSlug: string;
+  round: number;
+  board: number;
+  result?: GameResult;
+  status?: GameStatus;
+  evaluation?: number | null;
+  whiteTimeMs?: number | null;
+  blackTimeMs?: number | null;
+  sideToMove?: "white" | "black" | null;
+  finalFen?: string | null;
+  moveList?: string[] | null;
+};
+
+export type TournamentSlug = string;
+export type TournamentRoundManifest = Record<number, TournamentGame>;
+export type TournamentManifest = Record<number, TournamentRoundManifest>;
+export type TournamentManifests = Record<TournamentSlug, TournamentManifest>;
+
+const normalizeSlug = (slug?: string | null) => (slug ? slug.trim().toLowerCase() : "");
+
+const worldCupRound1: TournamentRoundManifest = {
+  1: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 1,
+    white: "Magnus Carlsen",
+    whiteTitle: "GM",
+    whiteRating: 2830,
+    whiteCountry: "NOR",
+    whiteFlag: "🇳🇴",
+    black: "D. Gukesh",
+    blackTitle: "GM",
+    blackRating: 2760,
+    blackCountry: "IND",
+    blackFlag: "🇮🇳",
+    result: "1-0",
+    status: "final",
+  },
+  2: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 2,
+    white: "Fabiano Caruana",
+    whiteTitle: "GM",
+    whiteRating: 2798,
+    whiteCountry: "USA",
+    whiteFlag: "🇺🇸",
+    black: "Ding Liren",
+    blackTitle: "GM",
+    blackRating: 2791,
+    blackCountry: "CHN",
+    blackFlag: "🇨🇳",
+    result: "½-½",
+    status: "final",
+  },
+  3: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 3,
+    white: "Hikaru Nakamura",
+    whiteTitle: "GM",
+    whiteRating: 2789,
+    whiteCountry: "USA",
+    whiteFlag: "🇺🇸",
+    black: "Ian Nepomniachtchi",
+    blackTitle: "GM",
+    blackRating: 2770,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "1-0",
+    status: "final",
+  },
+  4: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 4,
+    white: "Alireza Firouzja",
+    whiteTitle: "GM",
+    whiteRating: 2764,
+    whiteCountry: "FRA",
+    whiteFlag: "🇫🇷",
+    black: "Wesley So",
+    blackTitle: "GM",
+    blackRating: 2760,
+    blackCountry: "USA",
+    blackFlag: "🇺🇸",
+    result: "0-1",
+    status: "final",
+  },
+  5: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 5,
+    white: "R. Praggnanandhaa",
+    whiteTitle: "GM",
+    whiteRating: 2743,
+    whiteCountry: "IND",
+    whiteFlag: "🇮🇳",
+    black: "N. Abdusattorov",
+    blackTitle: "GM",
+    blackRating: 2745,
+    blackCountry: "UZB",
+    blackFlag: "🇺🇿",
+    result: "½-½",
+    status: "final",
+  },
+  6: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 6,
+    white: "Anish Giri",
+    whiteTitle: "GM",
+    whiteRating: 2740,
+    whiteCountry: "NED",
+    whiteFlag: "🇳🇱",
+    black: "Jan-Krzysztof Duda",
+    blackTitle: "GM",
+    blackRating: 2730,
+    blackCountry: "POL",
+    blackFlag: "🇵🇱",
+    result: "0-1",
+    status: "final",
+  },
+  7: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 7,
+    white: "M. Vachier-Lagrave",
+    whiteTitle: "GM",
+    whiteRating: 2750,
+    whiteCountry: "FRA",
+    whiteFlag: "🇫🇷",
+    black: "S. Mamedyarov",
+    blackTitle: "GM",
+    blackRating: 2745,
+    blackCountry: "AZE",
+    blackFlag: "🇦🇿",
+    result: "1-0",
+    status: "final",
+  },
+  8: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 8,
+    white: "Levon Aronian",
+    whiteTitle: "GM",
+    whiteRating: 2755,
+    whiteCountry: "USA",
+    whiteFlag: "🇺🇸",
+    black: "Teimour Radjabov",
+    blackTitle: "GM",
+    blackRating: 2735,
+    blackCountry: "AZE",
+    blackFlag: "🇦🇿",
+    result: "½-½",
+    status: "final",
+  },
+  9: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 9,
+    white: "Richard Rapport",
+    whiteTitle: "GM",
+    whiteRating: 2740,
+    whiteCountry: "ROU",
+    whiteFlag: "🇷🇴",
+    black: "Alexander Grischuk",
+    blackTitle: "GM",
+    blackRating: 2710,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "1-0",
+    status: "final",
+  },
+  10: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 10,
+    white: "Vidit Gujrathi",
+    whiteTitle: "GM",
+    whiteRating: 2727,
+    whiteCountry: "IND",
+    whiteFlag: "🇮🇳",
+    black: "Vladimir Fedoseev",
+    blackTitle: "GM",
+    blackRating: 2700,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "0-1",
+    status: "final",
+  },
+  11: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 11,
+    white: "Rameshbabu Vaishali",
+    whiteTitle: "WGM",
+    whiteRating: 2495,
+    whiteCountry: "IND",
+    whiteFlag: "🇮🇳",
+    black: "Aleksandra Goryachkina",
+    blackTitle: "GM",
+    blackRating: 2580,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "0-1",
+    status: "final",
+  },
+  12: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 12,
+    white: "Anna Muzychuk",
+    whiteTitle: "GM",
+    whiteRating: 2535,
+    whiteCountry: "UKR",
+    whiteFlag: "🇺🇦",
+    black: "Kateryna Lagno",
+    blackTitle: "GM",
+    blackRating: 2550,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "1-0",
+    status: "final",
+  },
+  13: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 13,
+    white: "Wei Yi",
+    whiteTitle: "GM",
+    whiteRating: 2745,
+    whiteCountry: "CHN",
+    whiteFlag: "🇨🇳",
+    black: "Yu Yangyi",
+    blackTitle: "GM",
+    blackRating: 2730,
+    blackCountry: "CHN",
+    blackFlag: "🇨🇳",
+    result: "1-0",
+    status: "final",
+  },
+  14: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 14,
+    white: "Santosh Gujrathi",
+    whiteTitle: "GM",
+    whiteRating: 2650,
+    whiteCountry: "IND",
+    whiteFlag: "🇮🇳",
+    black: "Arjun Erigaisi",
+    blackTitle: "GM",
+    blackRating: 2720,
+    blackCountry: "IND",
+    blackFlag: "🇮🇳",
+    result: "0-1",
+    status: "final",
+  },
+  15: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 15,
+    white: "Vincent Keymer",
+    whiteTitle: "GM",
+    whiteRating: 2700,
+    whiteCountry: "GER",
+    whiteFlag: "🇩🇪",
+    black: "David Navara",
+    blackTitle: "GM",
+    blackRating: 2680,
+    blackCountry: "CZE",
+    blackFlag: "🇨🇿",
+    result: "½-½",
+    status: "final",
+  },
+  16: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 16,
+    white: "Boris Gelfand",
+    whiteTitle: "GM",
+    whiteRating: 2660,
+    whiteCountry: "ISR",
+    whiteFlag: "🇮🇱",
+    black: "Peter Svidler",
+    blackTitle: "GM",
+    blackRating: 2690,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "0-1",
+    status: "final",
+  },
+  17: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 17,
+    white: "Daniil Dubov",
+    whiteTitle: "GM",
+    whiteRating: 2710,
+    whiteCountry: "RUS",
+    whiteFlag: "🇷🇺",
+    black: "Andrey Esipenko",
+    blackTitle: "GM",
+    blackRating: 2680,
+    blackCountry: "RUS",
+    blackFlag: "🇷🇺",
+    result: "1-0",
+    status: "final",
+  },
+  18: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 18,
+    white: "Vladimir Kramnik",
+    whiteTitle: "GM",
+    whiteRating: 2750,
+    whiteCountry: "RUS",
+    whiteFlag: "🇷🇺",
+    black: "Veselin Topalov",
+    blackTitle: "GM",
+    blackRating: 2730,
+    blackCountry: "BUL",
+    blackFlag: "🇧🇬",
+    result: "½-½",
+    status: "final",
+  },
+  19: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 19,
+    white: "Judit Polgar",
+    whiteTitle: "GM",
+    whiteRating: 2735,
+    whiteCountry: "HUN",
+    whiteFlag: "🇭🇺",
+    black: "Hou Yifan",
+    blackTitle: "GM",
+    blackRating: 2650,
+    blackCountry: "CHN",
+    blackFlag: "🇨🇳",
+    result: "1-0",
+    status: "final",
+  },
+  20: {
+    tournamentSlug: "worldcup",
+    round: 1,
+    board: 20,
+    white: "Tania Sachdev",
+    whiteTitle: "IM",
+    whiteRating: 2440,
+    whiteCountry: "IND",
+    whiteFlag: "🇮🇳",
+    black: "Irina Krush",
+    blackTitle: "GM",
+    blackRating: 2470,
+    blackCountry: "USA",
+    blackFlag: "🇺🇸",
+    result: "0-1",
+    status: "final",
+  },
+};
+
+const manifests: TournamentManifests = {
+  worldcup: {
+    1: worldCupRound1,
+  },
+};
+
+export function getTournamentGameManifest(
+  tournamentSlug?: string | null,
+  round?: number,
+  board?: number
+): TournamentGame | null {
+  const slug = normalizeSlug(tournamentSlug);
+  const isValidRound = typeof round === "number" && Number.isFinite(round);
+  const isValidBoard = typeof board === "number" && Number.isFinite(board);
+  if (!slug || !isValidRound || !isValidBoard) return null;
+  const safeRound = Math.floor(round);
+  const safeBoard = Math.floor(board);
+  const manifest = manifests[slug];
+  if (!manifest) return null;
+  const roundManifest = manifest[safeRound];
+  if (!roundManifest) return null;
+  return roundManifest[safeBoard] ?? null;
+}
+
+export function getTournamentBoardsForRound(
+  tournamentSlug?: string | null,
+  round?: number
+): number[] | null {
+  const slug = normalizeSlug(tournamentSlug);
+  const isValidRound = typeof round === "number" && Number.isFinite(round);
+  if (!slug || !isValidRound) return null;
+  const safeRound = Math.floor(round);
+  const manifest = manifests[slug];
+  if (!manifest) return null;
+  const roundManifest = manifest[safeRound];
+  if (!roundManifest) return null;
+  const boardNumbers = Object.keys(roundManifest)
+    .map(key => Number(key))
+    .filter(board => Number.isFinite(board))
+    .sort((a, b) => a - b);
+  return boardNumbers.length > 0 ? boardNumbers : null;
+}
+
+export function applyTournamentLiveUpdates(updates: TournamentGameLiveUpdate[]): number {
+  if (!Array.isArray(updates) || updates.length === 0) return 0;
+  let applied = 0;
+  updates.forEach(update => {
+    const slug = normalizeSlug(update.tournamentSlug);
+    if (!slug) return;
+    const isValidRound = typeof update.round === "number" && Number.isFinite(update.round);
+    const isValidBoard = typeof update.board === "number" && Number.isFinite(update.board);
+    if (!isValidRound || !isValidBoard) return;
+    const safeRound = Math.floor(update.round);
+    const safeBoard = Math.floor(update.board);
+    if (!manifests[slug]) manifests[slug] = {};
+    if (!manifests[slug][safeRound]) manifests[slug][safeRound] = {};
+    const existing = manifests[slug][safeRound][safeBoard];
+    if (!existing) return;
+    manifests[slug][safeRound][safeBoard] = {
+      ...existing,
+      ...("result" in update ? { result: update.result } : {}),
+      ...("status" in update ? { status: update.status } : {}),
+      ...("evaluation" in update ? { evaluation: update.evaluation } : {}),
+      ...("whiteTimeMs" in update ? { whiteTimeMs: update.whiteTimeMs } : {}),
+      ...("blackTimeMs" in update ? { blackTimeMs: update.blackTimeMs } : {}),
+      ...("sideToMove" in update ? { sideToMove: update.sideToMove } : {}),
+      ...("finalFen" in update ? { finalFen: update.finalFen } : {}),
+      ...("moveList" in update ? { moveList: update.moveList ?? null } : {}),
+    };
+    applied += 1;
+  });
+  return applied;
+}
