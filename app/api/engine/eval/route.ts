@@ -1,11 +1,23 @@
 import { NextResponse } from "next/server";
 import { CLOUD_ENGINE_URL, type CloudEngineRequest, type CloudEngineResponse } from "@/lib/engine/config";
 
-const BACKEND_ID: CloudEngineResponse["backend"] = "cloud-nnue";
-
 const isNonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 
-const clampNumber = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+const BACKEND_ID: CloudEngineResponse["backend"] = "cloud-nnue";
+const FAST_DEPTH = 12;
+const REFINE_DEPTH_MIN = 20;
+const REFINE_DEPTH_MAX = 30;
+const DEBUG_ENGINE_LOGS = typeof process !== "undefined" && process.env.DEBUG_ENGINE_LOGS === "true";
+const FAST_MOVETIME_MS = (() => {
+  const raw = typeof process !== "undefined" ? process.env.ENGINE_FAST_MOVETIME_MS : undefined;
+  const parsed = typeof raw === "string" ? Number(raw) : NaN;
+  const resolved = Number.isFinite(parsed) ? Math.floor(parsed) : 250;
+  return clampNumber(resolved, 200, 300);
+})();
 
 export async function POST(request: Request) {
   let payload: CloudEngineRequest;
@@ -29,26 +41,62 @@ export async function POST(request: Request) {
   const hashMb = Number.isFinite(Number(payload?.hashMb ?? NaN)) ? Number(payload?.hashMb) : undefined;
   const skillLevel = Number.isFinite(Number(payload?.skillLevel ?? NaN)) ? Number(payload?.skillLevel) : undefined;
   const profileId = payload?.profileId;
+  const refine = payload?.refine === true;
+  const refineTargetDepthRaw = Number(payload?.refineTargetDepth ?? NaN);
+  const refineTargetDepth = Number.isFinite(refineTargetDepthRaw)
+    ? Math.max(1, Math.floor(refineTargetDepthRaw))
+    : undefined;
+  const isRefineRequest = refine || Number.isFinite(refineTargetDepthRaw);
 
   if (
     !isNonEmptyString(fen) ||
     !Number.isFinite(multiPv) ||
     multiPv < 1 ||
     !isNonEmptyString(requestId) ||
-    (searchMode === "depth" && !Number.isFinite(targetDepth)) ||
+    (searchMode === "depth" && !Number.isFinite(targetDepth) && !Number.isFinite(refineTargetDepthRaw)) ||
     (searchMode !== "depth" && (!Number.isFinite(movetimeMs) || movetimeMs <= 0))
   ) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
   const safeMultiPv = clampNumber(Math.floor(multiPv), 1, 4);
+  const effectiveTargetDepth =
+    searchMode === "depth"
+      ? clampNumber(
+          Math.floor(isRefineRequest ? (refineTargetDepth ?? targetDepth ?? FAST_DEPTH) : (targetDepth ?? FAST_DEPTH)),
+          1,
+          64
+        )
+      : undefined;
+  const shouldFastPath = !isRefineRequest && searchMode === "depth" && (effectiveTargetDepth ?? 0) >= REFINE_DEPTH_MIN;
+  const forwardSearchMode: CloudEngineRequest["searchMode"] = shouldFastPath ? "time" : searchMode;
+  const forwardTargetDepth =
+    forwardSearchMode === "depth"
+      ? isRefineRequest
+        ? clampNumber(effectiveTargetDepth ?? REFINE_DEPTH_MIN, REFINE_DEPTH_MIN, REFINE_DEPTH_MAX)
+        : effectiveTargetDepth
+      : undefined;
+  const forwardMovetimeMs =
+    forwardSearchMode === "time"
+      ? shouldFastPath
+        ? clampNumber(
+            Number.isFinite(movetimeMs) && movetimeMs > 0 ? Math.floor(movetimeMs) : FAST_MOVETIME_MS,
+            200,
+            300
+          )
+        : clampNumber(
+            Number.isFinite(movetimeMs) && movetimeMs > 0 ? Math.floor(movetimeMs) : FAST_MOVETIME_MS,
+            150,
+            5000
+          )
+      : undefined;
   const forwardPayload: CloudEngineRequest = {
     fen,
-    movetimeMs: Number.isFinite(movetimeMs) && movetimeMs > 0 ? movetimeMs : undefined,
+    movetimeMs: forwardMovetimeMs,
     multiPv: safeMultiPv,
     requestId,
-    searchMode,
-    targetDepth,
+    searchMode: forwardSearchMode,
+    targetDepth: forwardTargetDepth,
     threads,
     hashMb,
     skillLevel,
@@ -73,15 +121,17 @@ export async function POST(request: Request) {
       if (!externalJson || !Array.isArray(externalJson.lines)) {
         throw new Error("External engine returned invalid payload");
       }
-      console.log("[ENGINE CORE] (cloud api → external) Forwarded response", {
-        requestId,
-        fenPreview: fen.slice(0, 60),
-        backend: externalJson.backend,
-        searchMode: forwardPayload.searchMode,
-        targetDepth: forwardPayload.targetDepth,
-        depth: externalJson.lines[0]?.depth,
-        scoreCp: externalJson.lines[0]?.scoreCp,
-      });
+      if (DEBUG_ENGINE_LOGS) {
+        console.log("[ENGINE CORE] (cloud api → external) Forwarded response", {
+          requestId,
+          fenPreview: fen.slice(0, 60),
+          backend: externalJson.backend,
+          searchMode: forwardPayload.searchMode,
+          targetDepth: forwardPayload.targetDepth,
+          depth: externalJson.lines[0]?.depth,
+          scoreCp: externalJson.lines[0]?.scoreCp,
+        });
+      }
       return externalJson;
     } catch (error) {
       console.warn("[ENGINE CORE] (cloud api fallback) External call failed", {
@@ -138,16 +188,18 @@ export async function POST(request: Request) {
     engineName: "Stockfish (cloud stub)",
   };
 
-  console.log("[ENGINE CORE] (cloud api) Responding", {
-    requestId,
-    fenPreview: fen.slice(0, 60),
-    movetimeMs: forwardPayload.movetimeMs,
-    searchMode: forwardPayload.searchMode,
-    targetDepth: forwardPayload.targetDepth,
-    multiPv: safeMultiPv,
-    depth: lines[0]?.depth,
-    scoreCp: lines[0]?.scoreCp,
-  });
+  if (DEBUG_ENGINE_LOGS) {
+    console.log("[ENGINE CORE] (cloud api) Responding", {
+      requestId,
+      fenPreview: fen.slice(0, 60),
+      movetimeMs: forwardPayload.movetimeMs,
+      searchMode: forwardPayload.searchMode,
+      targetDepth: forwardPayload.targetDepth,
+      multiPv: safeMultiPv,
+      depth: lines[0]?.depth,
+      scoreCp: lines[0]?.scoreCp,
+    });
+  }
 
   return NextResponse.json(response);
 }

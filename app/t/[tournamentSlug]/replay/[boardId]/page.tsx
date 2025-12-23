@@ -1,6 +1,7 @@
 "use client";
 
 import ReplayBoardPage from "../../../../replay/[boardId]/page";
+import { normalizeTournamentSlug } from "@/lib/boardId";
 
 type TournamentReplayPageProps = {
   params: Promise<{ tournamentSlug: string; boardId: string }>;
@@ -9,7 +10,7 @@ type TournamentReplayPageProps = {
 export default function TournamentReplayPage({ params }: TournamentReplayPageProps) {
   const remappedParams = params.then(resolved => ({
     boardId: resolved.boardId,
-    tournamentId: resolved.tournamentSlug,
+    tournamentId: normalizeTournamentSlug(resolved.tournamentSlug),
   }));
 
   return <ReplayBoardPage params={remappedParams} />;

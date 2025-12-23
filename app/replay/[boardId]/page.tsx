@@ -19,6 +19,8 @@ import { pliesToFenAt } from "@/lib/chess/pgn";
 import { mapEvaluationToBar, type EvaluationBarMapping } from "@/lib/engine/evalMapping";
 import type { EngineProfileId } from "@/lib/engine/config";
 import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
+import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
+import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
 import { getReplayProgress, setReplayProgress, clearReplayProgress } from "@/lib/replayProgress";
 import { getReplaySpeed, setReplaySpeed } from "@/lib/replaySettings";
 import {
@@ -173,9 +175,7 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const isEmbed =
     embedParam === "1" || (typeof embedParam === "string" && embedParam.toLowerCase() === "true");
   const mainClassName = "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden";
-  const contentClassName = isEmbed
-    ? "mx-auto flex-1 w-full max-w-[1440px] px-3 py-3"
-    : "mx-auto flex-1 w-full max-w-[1440px] px-4 py-4 lg:px-8";
+  const contentClassName = "mx-auto flex-1 w-full max-w-[1440px] px-4 py-1.5 lg:px-8";
   const mediaContainerClass = isEmbed
     ? "aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm"
     : "aspect-video w-full max-h-[40vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[48vh]";
@@ -273,13 +273,13 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const displayGameLabel = DEMO_TOURNAMENT_LABEL;
 
   const plies = useMemo(() => {
-    if (boardSelection.tournamentSlug === "worldcup" && boardSelection.round === 1) {
+    if (boardSelection.tournamentSlug === "worldcup2025" && boardSelection.round === 1) {
       const pgn = getWorldCupPgnForBoard(boardSelection.board);
       const parsed = pliesFromPgn(pgn);
       if (parsed.length) {
         return parsed;
       }
-      console.warn("[worldcup] Falling back to demo plies for board", {
+      console.warn("[worldcup2025] Falling back to demo plies for board", {
         boardNumber: boardSelection.board,
         boardId,
       });
@@ -290,30 +290,60 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     plies.length ? plies.length - 1 : -1
   );
   const [analysisEnabled, setAnalysisEnabled] = useState(false);
-  const [orientation, setOrientation] = useState<Orientation>("white");
+  const { orientation, toggleOrientation: handleFlip } = usePersistentBoardOrientation("white");
   const [gaugeEnabled, setGaugeEnabled] = useState(true);
   const liveIndex = plies.length - 1;
   const canPrev = currentMoveIndex > -1;
   const canNext = liveIndex >= 0 && currentMoveIndex < liveIndex;
   const liveActive = liveIndex >= 0 && currentMoveIndex === liveIndex;
 
-  const handlePrev = useCallback(
-    () => setCurrentMoveIndex(prev => Math.max(-1, prev - 1)),
-    []
-  );
-  const handleNext = useCallback(() => {
+  const handlePrevOfficial = useCallback(() => setCurrentMoveIndex(prev => Math.max(-1, prev - 1)), []);
+  const handleNextOfficial = useCallback(() => {
     if (liveIndex < 0) return;
     setCurrentMoveIndex(prev => Math.min(liveIndex, prev + 1));
   }, [liveIndex]);
+
+  const boardPosition = pliesToFenAt(plies, currentMoveIndex);
+  const {
+    analysisViewActive,
+    analysisBranches,
+    activeAnalysisAnchorPly,
+    analysisCursorNodeId,
+    displayFen,
+    exitAnalysisView,
+    selectAnalysisMove,
+    promoteAnalysisNode,
+    deleteAnalysisLine,
+    deleteAnalysisFromHere,
+    onPieceDrop: handlePieceDrop,
+  } = useBoardAnalysis({
+    boardId,
+    tournamentId,
+    plies,
+    currentMoveIndex,
+    officialFen: boardPosition,
+    onOfficialPrev: handlePrevOfficial,
+    onOfficialNext: handleNextOfficial,
+  });
+
+  const handlePrev = useCallback(() => {
+    exitAnalysisView();
+    handlePrevOfficial();
+  }, [exitAnalysisView, handlePrevOfficial]);
+  const handleNext = useCallback(() => {
+    exitAnalysisView();
+    handleNextOfficial();
+  }, [exitAnalysisView, handleNextOfficial]);
   const handleLive = useCallback(() => {
     if (liveIndex < 0) return;
+    exitAnalysisView();
     setCurrentMoveIndex(liveIndex);
-  }, [liveIndex]);
-  const handleFlip = () => setOrientation(prev => (prev === "white" ? "black" : "white"));
+  }, [exitAnalysisView, liveIndex]);
 
   const handleNotationPlySelect = useCallback(
     (plyIdx: number) => {
       if (!Number.isFinite(plyIdx)) return;
+      exitAnalysisView();
       if (plyIdx < 0) {
         setCurrentMoveIndex(-1);
         return;
@@ -324,32 +354,14 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       }
       setCurrentMoveIndex(Math.min(plyIdx, liveIndex));
     },
-    [liveIndex]
+    [exitAnalysisView, liveIndex]
   );
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
-      }
-      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-        event.preventDefault();
-        handleNext();
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-        event.preventDefault();
-        handlePrev();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleNext, handlePrev]);
-
-  const boardPosition = pliesToFenAt(plies, currentMoveIndex);
   const {
     eval: engineEval,
     bestLines: engineLines,
     isEvaluating: engineThinking,
+    evaluatedFen: engineEvaluatedFen,
     activeProfileId,
     activeProfileConfig,
     multiPv,
@@ -360,7 +372,7 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     setMultiPv,
     setActiveProfileId,
   } = useCloudEngineEvaluation(
-    boardPosition,
+    displayFen,
     {
       enabled: analysisEnabled,
     }
@@ -380,10 +392,11 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const effectiveEngineEval = analysisEnabled ? engineEval : null;
   const effectiveEngineLines = analysisEnabled ? engineLines : [];
   const effectiveEngineThinking = analysisEnabled && engineThinking;
+  const engineDisplayFen = engineEvaluatedFen ?? displayFen;
   const { value: evaluation, label: evaluationLabel, advantage: evaluationAdvantage } = useMemo<EvaluationBarMapping>(() => {
     if (!gaugeEnabled) return { value: null, label: null, advantage: null };
-    return mapEvaluationToBar(effectiveEngineEval, boardPosition, { enabled: analysisEnabled });
-  }, [boardPosition, analysisEnabled, effectiveEngineEval, gaugeEnabled]);
+    return mapEvaluationToBar(effectiveEngineEval, engineDisplayFen, { enabled: analysisEnabled });
+  }, [analysisEnabled, effectiveEngineEval, engineDisplayFen, gaugeEnabled]);
   const replayStatus = { label: "REPLAY", className: "bg-blue-600/80 text-white" };
   const boardNavBase = useMemo(() => {
     if (!tournamentHref) return null;
@@ -1607,40 +1620,8 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       {bookmarkSection}
     </>
   );
-  const analysisToggle = (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={analysisEnabled}
-      onClick={() => setAnalysisEnabled(prev => !prev)}
-      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-        analysisEnabled
-          ? "border-emerald-300/60 bg-emerald-500/10 text-emerald-100 hover:border-emerald-200"
-          : "border-slate-700 bg-slate-900/60 text-slate-200 hover:border-slate-500"
-      }`}
-    >
-      <span
-        className={`flex h-5 w-9 items-center rounded-full px-[3px] transition ${
-          analysisEnabled ? "bg-emerald-500/60" : "bg-slate-700"
-        }`}
-      >
-        <span
-          className={`h-4 w-4 rounded-full bg-white shadow transition ${
-            analysisEnabled ? "translate-x-4" : "translate-x-0"
-          }`}
-        />
-      </span>
-      <span className="leading-tight">
-        <span className="block text-[11px] uppercase tracking-wide text-slate-300">Analysis</span>
-        <span className="block text-[11px] font-semibold text-white">
-          {analysisEnabled ? "On (cloud)" : "Off"}
-        </span>
-      </span>
-    </button>
-  );
   const headerControls = (
     <div className="flex flex-wrap items-center justify-end gap-2">
-      {analysisToggle}
       <LiveHeaderControls
         boardId={boardId}
         tournamentSlug={boardSelection.tournamentSlug}
@@ -1659,7 +1640,17 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       boardId={boardId}
       boardDomId="cv-replay-board"
       boardOrientation={orientation}
-      boardPosition={boardPosition}
+      boardPosition={displayFen}
+      onPieceDrop={handlePieceDrop}
+      analysisViewActive={analysisViewActive}
+      analysisBranches={analysisBranches}
+      activeAnalysisAnchorPly={activeAnalysisAnchorPly}
+      analysisCursorNodeId={analysisCursorNodeId}
+      onExitAnalysisView={exitAnalysisView}
+      onSelectAnalysisMove={selectAnalysisMove}
+      onPromoteAnalysisNode={promoteAnalysisNode}
+      onDeleteAnalysisLine={deleteAnalysisLine}
+      onDeleteAnalysisFromHere={deleteAnalysisFromHere}
       showEval={gaugeEnabled}
       evaluation={evaluation}
       evaluationLabel={evaluationLabel}
@@ -1705,8 +1696,6 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       previousBoardHref={previousBoardHref}
       nextBoardHref={nextBoardHref}
       boardNumber={boardNumber}
-      mainClassName={mainClassName}
-      contentClassName={contentClassName}
       mediaContainerClass={mediaContainerClass}
       videoPane={{
         containerRef: videoContainerRef,
@@ -1715,26 +1704,25 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
         secondaryPill: overlayLabel,
         footer: videoFooter,
       }}
-      notation={{
-        engineOn: analysisEnabled,
-        setEngineOn: setAnalysisEnabled,
-        engineEval: effectiveEngineEval,
-        engineLines: effectiveEngineLines,
-        engineThinking: effectiveEngineThinking,
-        engineProfileId: activeProfileId,
-        engineProfile: activeProfileConfig,
-        setEngineProfileId: handleProfileChange,
-        multiPv,
-        depthIndex,
-        depthSteps,
-        targetDepth,
-        setMultiPv,
-        setDepthIndex: handleDepthChange,
-        fen: boardPosition,
-        engineName: REPLAY_ENGINE_LABEL,
-        engineBackend: "cloud",
-        setEngineBackend: undefined,
-        plies,
+	      notation={{
+	        engineOn: analysisEnabled,
+	        setEngineOn: setAnalysisEnabled,
+	        engineEval: effectiveEngineEval,
+	        engineLines: effectiveEngineLines,
+	        engineProfileId: activeProfileId,
+	        engineProfile: activeProfileConfig,
+	        setEngineProfileId: handleProfileChange,
+	        multiPv,
+	        depthIndex,
+	        depthSteps,
+	        targetDepth,
+	        setMultiPv,
+	        setDepthIndex: handleDepthChange,
+	        fen: engineDisplayFen,
+	        engineName: REPLAY_ENGINE_LABEL,
+	        engineBackend: "cloud",
+	        setEngineBackend: undefined,
+	        plies,
         currentMoveIndex,
         onMoveSelect: handleNotationPlySelect,
       }}

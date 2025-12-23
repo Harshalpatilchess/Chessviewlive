@@ -56,8 +56,7 @@ const applySanMove = (
 ): Ply | null => {
   if (!san) return null;
   try {
-    const result = chess.move(san, { sloppy: true } as any);
-    if (!result) return null;
+    const result = chess.move(san, { strict: false });
     return {
       san: result.san,
       fen: chess.fen(),
@@ -95,10 +94,8 @@ export const buildFenSequenceFromMoves = (moves: NotationMove[]): string[] => {
     const whiteSan = sanitizeSan(move.white);
     if (whiteSan) {
       try {
-        const result = chess.move(whiteSan, { sloppy: true } as any);
-        if (result) {
-          fenAfterMove = chess.fen();
-        }
+        chess.move(whiteSan, { strict: false });
+        fenAfterMove = chess.fen();
       } catch {
         // ignore invalid SAN entries
       }
@@ -106,10 +103,8 @@ export const buildFenSequenceFromMoves = (moves: NotationMove[]): string[] => {
     const blackSan = sanitizeSan(move.black);
     if (blackSan) {
       try {
-        const result = chess.move(blackSan, { sloppy: true } as any);
-        if (result) {
-          fenAfterMove = chess.fen();
-        }
+        chess.move(blackSan, { strict: false });
+        fenAfterMove = chess.fen();
       } catch {
         // ignore invalid SAN entries
       }

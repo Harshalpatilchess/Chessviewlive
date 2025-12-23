@@ -52,7 +52,7 @@ export default function BoardControls({
           aria-label="Live"
           onClick={onLive}
           className={`rounded border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
-            liveActive
+            !liveActive
               ? "border-emerald-400 bg-emerald-500/20 text-emerald-100"
               : "border-white/10 bg-slate-800/60 text-white hover:border-white/40"
           }`}

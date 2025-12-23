@@ -33,7 +33,7 @@ const EvalBar = ({ value, scoreLabel, advantage, orientation = "white" }: EvalBa
     <div className="relative flex h-full w-3 items-stretch overflow-hidden rounded-full bg-slate-800/70 md:w-3.5">
       <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-amber-300/70" />
       <div
-        className="mt-auto h-full w-full rounded-full bg-emerald-400 transition-all"
+        className="mt-auto h-full w-full rounded-full bg-emerald-400"
         style={{ height: `${percent}%` }}
         aria-label={displayLabel}
       />

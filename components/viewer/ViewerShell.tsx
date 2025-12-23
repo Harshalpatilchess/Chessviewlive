@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 import BoardControls from "@/components/live/BoardControls";
 import MainEvalBar from "@/components/live/MainEvalBar";
@@ -8,8 +8,9 @@ import RightPaneTabs from "@/components/live/RightPaneTabs";
 import type { BoardSwitcherOption } from "@/components/tournament/BoardSwitcher";
 import AnimatedBoardPane from "@/components/viewer/AnimatedBoardPane";
 import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
+import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
 import type { Ply } from "@/lib/chess/pgn";
-import { buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
+import { buildBoardIdentifier, normalizeBoardIdentifier } from "@/lib/boardId";
 import { getTournamentBoardsForRound, getTournamentGameManifest } from "@/lib/tournamentManifest";
 import type { GameResult, GameStatus } from "@/lib/tournamentManifest";
 import type { StockfishEval, StockfishLine } from "@/lib/engine/useStockfishEvaluation";
@@ -50,7 +51,6 @@ type NotationProps = {
   onMoveSelect: (idx: number) => void;
   engineEval?: StockfishEval;
   engineLines?: StockfishLine[];
-  engineThinking?: boolean;
   engineName?: string;
   engineBackend?: EngineBackend;
   setEngineBackend?: (backend: EngineBackend) => void;
@@ -111,26 +111,6 @@ const scorePillClasses = (variant: ScoreVariant) => {
   return "border-slate-600 bg-slate-900 text-slate-200";
 };
 
-type BoardNavigationEntry = {
-  boardId: string;
-  boardNumber: number;
-  result?: GameResult;
-  status?: GameStatus;
-  evaluation?: number | null;
-  white: {
-    name: string;
-    title?: string | null;
-    rating?: number;
-    flag?: string;
-  };
-  black: {
-    name: string;
-    title?: string | null;
-    rating?: number;
-    flag?: string;
-  };
-};
-
 const BOARD_SCAN_LIMIT = 20;
 
 type ViewerShellProps = {
@@ -141,6 +121,34 @@ type ViewerShellProps = {
   boardDomId?: string;
   boardOrientation: Orientation;
   boardPosition: string;
+  onPieceDrop?: (sourceSquare: string, targetSquare: string, piece: string) => boolean;
+  analysisViewActive?: boolean;
+  analysisBranches?: Array<{
+    anchorPly: number;
+    anchorFullmoveNumber: number;
+    anchorTurn: "w" | "b";
+    startFen: string;
+    rootChildren: string[];
+    rootMainChildId: string | null;
+    nodesById: Record<
+      string,
+      {
+        id: string;
+        san: string;
+        fenAfter: string;
+        parentId: string | null;
+        children: string[];
+        mainChildId: string | null;
+      }
+    >;
+  }> | null;
+  activeAnalysisAnchorPly?: number | null;
+  analysisCursorNodeId?: string | null;
+  onExitAnalysisView?: () => void;
+  onSelectAnalysisMove?: (anchorPly: number, nodeId: string | null) => void;
+  onPromoteAnalysisNode?: (anchorPly: number, nodeId: string) => void;
+  onDeleteAnalysisLine?: (anchorPly: number, nodeId: string) => void;
+  onDeleteAnalysisFromHere?: (anchorPly: number, nodeId: string) => void;
   showEval: boolean;
   evaluation?: number | null;
   evaluationLabel?: string | null;
@@ -189,6 +197,16 @@ export function ViewerShell({
   boardDomId = boardId,
   boardOrientation,
   boardPosition,
+  onPieceDrop,
+  analysisViewActive = false,
+  analysisBranches,
+  activeAnalysisAnchorPly,
+  analysisCursorNodeId,
+  onExitAnalysisView,
+  onSelectAnalysisMove,
+  onPromoteAnalysisNode,
+  onDeleteAnalysisLine,
+  onDeleteAnalysisFromHere,
   showEval,
   evaluation,
   evaluationLabel,
@@ -209,7 +227,7 @@ export function ViewerShell({
   videoPane,
   notation,
   mediaContainerClass = "aspect-video w-full max-h-[52vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[60vh]",
-  mainClassName = "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden",
+  mainClassName = "flex min-h-screen h-[100dvh] flex-col bg-slate-950 text-slate-100 overflow-hidden",
   contentClassName = "mx-auto flex-1 w-full max-w-[1440px] px-4 py-1.5 lg:px-8",
   statsOverlay,
   liveVersion = 0,
@@ -228,7 +246,20 @@ export function ViewerShell({
   const bottomPoints = isWhiteAtBottom ? playerPoints.white : playerPoints.black;
   const normalizedEvalLabel = evaluationLabel ?? "-";
   const normalizedAdvantage = evaluationAdvantage ?? "equal";
-  const renderPlayerRow = (player: PlayerCardProps, points: { score: string; variant: ScoreVariant }) => (
+  const analysisDisplayed =
+    analysisViewActive &&
+    typeof activeAnalysisAnchorPly === "number" &&
+    Array.isArray(analysisBranches) &&
+    analysisBranches.some(branch => branch.anchorPly === activeAnalysisAnchorPly);
+  const isViewingOfficialLivePosition = liveActive && !analysisDisplayed;
+  const gameIsRealtimeLive = mode === "live" && boardStatus === "live";
+  const liveButtonNeutral = !gameIsRealtimeLive || isViewingOfficialLivePosition;
+  const emptyBoardNavLogRef = useRef<string | null>(null);
+  const renderPlayerRow = (
+    player: PlayerCardProps,
+    points: { score: string; variant: ScoreVariant },
+    options?: { showAnalysis?: boolean }
+  ) => (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2 text-[11px] text-slate-200 sm:text-xs">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-base" aria-hidden>
@@ -252,6 +283,16 @@ export function ViewerShell({
         <span className="text-[11px] uppercase tracking-wide text-slate-300 sm:text-xs">
           {player.countryCode}
         </span>
+        {options?.showAnalysis ? (
+          <>
+            <span className="text-slate-600" aria-hidden>
+              &middot;
+            </span>
+            <span className="rounded-full border border-rose-300/40 bg-rose-500/15 px-2.5 py-1 text-[10px] font-semibold uppercase text-rose-100">
+              Analysis
+            </span>
+          </>
+        ) : null}
       </div>
       <div className="flex items-center gap-2">
         <span
@@ -266,12 +307,12 @@ export function ViewerShell({
     </div>
   );
   const boardNavigation = useMemo(() => {
-    const parsed = parseBoardIdentifier(boardId);
+    const { normalizedBoardId, parsed } = normalizeBoardIdentifier(boardId);
     const boardNumbers =
       getTournamentBoardsForRound(parsed.tournamentSlug, parsed.round) ??
       Array.from({ length: BOARD_SCAN_LIMIT }, (_, idx) => idx + 1);
 
-    return boardNumbers
+    const fromFeed = boardNumbers
       .map(boardNum => {
         const game = getTournamentGameManifest(parsed.tournamentSlug, parsed.round, boardNum);
         if (!game) return null;
@@ -289,8 +330,6 @@ export function ViewerShell({
           sideToMove: game.sideToMove ?? "white",
           finalFen: game.finalFen ?? null,
           moveList: game.moveList ?? null,
-          whiteClock: game.whiteClock ?? null,
-          blackClock: game.blackClock ?? null,
           evaluation: game.evaluation ?? null,
           white: {
             name: game.white,
@@ -307,14 +346,122 @@ export function ViewerShell({
         } as BoardNavigationEntry;
       })
       .filter((entry): entry is BoardNavigationEntry => Boolean(entry));
+
+    const debug = {
+      incomingBoardId: boardId,
+      normalizedBoardId,
+      tournamentKey: parsed.tournamentSlug,
+      roundKey: String(parsed.round),
+      feedCount: fromFeed.length,
+    };
+
+    if (fromFeed.length > 0) {
+      return { boards: fromFeed, normalizedBoardId, source: "feed" as const, debug };
+    }
+
+    const fromManifestFallback: BoardNavigationEntry[] = boardNumbers.map(boardNum => ({
+      boardId: buildBoardIdentifier(parsed.tournamentSlug, parsed.round, boardNum),
+      boardNumber: boardNum,
+      status: "unknown",
+      result: null,
+      evaluation: null,
+      whiteTimeMs: null,
+      blackTimeMs: null,
+      sideToMove: null,
+      finalFen: null,
+      moveList: null,
+      white: { name: "TBD", title: null },
+      black: { name: "TBD", title: null },
+    }));
+
+    return {
+      boards: fromManifestFallback,
+      normalizedBoardId,
+      source: "manifest" as const,
+      debug: { ...debug, manifestCount: fromManifestFallback.length },
+    };
   }, [boardId, liveVersion]);
+
+  useEffect(() => {
+    if (typeof process !== "undefined" && process.env.NODE_ENV === "production") return;
+    if (!boardNavigation || boardNavigation.boards.length > 0) return;
+    const debug = boardNavigation.debug;
+    const marker = `${debug.incomingBoardId}|${debug.normalizedBoardId}|${debug.tournamentKey}|${debug.roundKey}`;
+    if (emptyBoardNavLogRef.current === marker) return;
+    emptyBoardNavLogRef.current = marker;
+    console.warn("[boards-navigation] empty boards list", {
+      incomingBoardId: debug.incomingBoardId,
+      normalizedBoardId: debug.normalizedBoardId,
+      tournamentKey: debug.tournamentKey,
+      roundKey: debug.roundKey,
+      source: boardNavigation.source,
+      feedCount: debug.feedCount,
+      manifestCount: "manifestCount" in debug ? debug.manifestCount : undefined,
+    });
+  }, [boardNavigation]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleFlipHotkey = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key !== "f" && event.key !== "F") return;
+      event.preventDefault();
+      event.stopImmediatePropagation?.();
+      onFlip();
+    };
+    window.addEventListener("keydown", handleFlipHotkey, { capture: true });
+    return () => window.removeEventListener("keydown", handleFlipHotkey, { capture: true } as AddEventListenerOptions);
+  }, [onFlip]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (!analysisViewActive) return;
+
+      if (mode === "live") {
+        onLive();
+        return;
+      }
+
+      onExitAnalysisView?.();
+    };
+    window.addEventListener("keydown", handleEscape, { capture: true });
+    return () =>
+      window.removeEventListener(
+        "keydown",
+        handleEscape,
+        { capture: true } as AddEventListenerOptions
+      );
+  }, [analysisViewActive, mode, onExitAnalysisView, onLive]);
 
   return (
     <>
       <main className={mainClassName}>
         <div className={`${contentClassName} flex flex-col min-h-0`}>
-      <div className="flex flex-1 min-h-0 flex-col gap-4 overflow-hidden lg:flex-row lg:items-stretch">
-        <section className="mx-auto flex h-full min-h-0 w-full max-w-[620px] flex-1 flex-col gap-1.5 rounded-3xl border border-white/10 bg-slate-950/80 p-3 shadow-xl ring-1 ring-white/5 lg:flex-[0.9]">
+      <div className="flex flex-1 min-h-0 flex-col gap-3 overflow-hidden sm:gap-4 lg:flex-row lg:items-stretch">
+        <section className="mx-auto flex min-h-0 w-full max-w-[620px] flex-1 flex-col gap-1.5 rounded-3xl border border-white/10 bg-slate-950/80 p-3 shadow-xl ring-1 ring-white/5 lg:h-full lg:flex-[0.9]">
           <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-2.5">
             <div>
               <h2 className="text-lg font-semibold text-white">{headerTitle}</h2>
@@ -322,32 +469,33 @@ export function ViewerShell({
             {headerControls}
           </header>
 
-          <AnimatedBoardPane boardKey={boardId}>
-            <div className="flex flex-col gap-2.5 rounded-3xl border border-slate-800/70 bg-slate-950/80 p-3 shadow-inner sm:p-3.5">
-              <div className="space-y-2 sm:space-y-2.5">
-                {renderPlayerRow(topPlayer, topPoints)}
-
-                <div className="flex items-stretch gap-2.5 sm:gap-3.5">
-                  <MainEvalBar
-                    show={showEval}
-                    value={evaluation ?? null}
-                    label={normalizedEvalLabel}
-                    advantage={normalizedAdvantage}
-                    orientation={boardOrientation}
-                  />
-                      <div className="relative flex-1">
-                        <BroadcastReactBoard
-                          boardId={boardDomId}
-                          boardOrientation={boardOrientation}
-                          position={boardPosition}
-                          draggable={false}
+	          <AnimatedBoardPane boardKey={boardId}>
+	            <div className="flex flex-col gap-2.5 rounded-3xl border border-slate-800/70 bg-slate-950/80 p-3 shadow-inner sm:p-3.5">
+	              <div className="space-y-2 sm:space-y-2.5">
+	                {renderPlayerRow(topPlayer, topPoints, { showAnalysis: analysisDisplayed })}
+	
+	                <div className="flex items-stretch gap-2.5 sm:gap-3.5">
+	                  <MainEvalBar
+	                    show={showEval}
+	                    value={evaluation ?? null}
+	                    label={normalizedEvalLabel}
+	                    advantage={normalizedAdvantage}
+	                    orientation={boardOrientation}
+	                  />
+	                      <div className="relative flex-1">
+	                        <BroadcastReactBoard
+	                          boardId={boardDomId}
+	                          boardOrientation={boardOrientation}
+	                          position={boardPosition}
+	                          draggable={Boolean(onPieceDrop)}
+                          onPieceDrop={onPieceDrop}
                           showNotation
                         />
                       </div>
                     </div>
 
-                    {renderPlayerRow(bottomPlayer, bottomPoints)}
-                  </div>
+	                    {renderPlayerRow(bottomPlayer, bottomPoints)}
+	                  </div>
 
                   <div className="pt-1 sm:pt-1.5">
                     <BoardControls
@@ -359,14 +507,14 @@ export function ViewerShell({
                       toggleEval={onToggleEval ?? (() => {})}
                       canPrev={canPrev}
                       canNext={canNext}
-                      liveActive={liveActive}
+                      liveActive={liveButtonNeutral}
                     />
                   </div>
                 </div>
               </AnimatedBoardPane>
             </section>
 
-            <aside className="flex h-full min-h-0 w-full flex-col gap-1.5 overflow-hidden lg:flex-[1.1] lg:gap-2">
+            <aside className="flex flex-none h-[44dvh] min-h-0 w-full flex-col gap-1.5 overflow-hidden lg:h-full lg:flex-[1.1] lg:gap-2">
               <div ref={videoPane.containerRef} className={`${mediaContainerClass} relative flex-none`}>
                 {videoPane.content ?? (
                   <div ref={videoPane.innerRef} className="absolute inset-0 h-full w-full" />
@@ -396,7 +544,6 @@ export function ViewerShell({
                   onMoveSelect={notation.onMoveSelect}
                   engineEval={notation.engineEval}
                   engineLines={notation.engineLines}
-                  engineThinking={notation.engineThinking}
                   engineName={notation.engineName}
                   engineBackend={notation.engineBackend}
                   setEngineBackend={notation.setEngineBackend}
@@ -410,9 +557,17 @@ export function ViewerShell({
                   engineProfile={notation.engineProfile}
                   setEngineProfileId={notation.setEngineProfileId}
                   fen={notation.fen}
-                  boardNavigation={boardNavigation}
-                  currentBoardId={boardId}
-                  mode={mode}
+                  analysisViewActive={analysisViewActive}
+                  analysisBranches={analysisBranches}
+                  activeAnalysisAnchorPly={activeAnalysisAnchorPly}
+                  analysisCursorNodeId={analysisCursorNodeId}
+                  onExitAnalysisView={onExitAnalysisView}
+                  onSelectAnalysisMove={onSelectAnalysisMove}
+                  onPromoteAnalysisNode={onPromoteAnalysisNode}
+                  onDeleteAnalysisLine={onDeleteAnalysisLine}
+                  onDeleteAnalysisFromHere={onDeleteAnalysisFromHere}
+                  boardNavigation={boardNavigation.boards}
+                  currentBoardId={boardNavigation.normalizedBoardId}
                 />
               </div>
             </aside>

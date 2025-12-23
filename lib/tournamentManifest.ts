@@ -51,7 +51,7 @@ const normalizeSlug = (slug?: string | null) => (slug ? slug.trim().toLowerCase(
 
 const worldCupRound1: TournamentRoundManifest = {
   1: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 1,
     white: "Magnus Carlsen",
@@ -68,7 +68,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   2: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 2,
     white: "Fabiano Caruana",
@@ -85,7 +85,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   3: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 3,
     white: "Hikaru Nakamura",
@@ -102,7 +102,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   4: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 4,
     white: "Alireza Firouzja",
@@ -119,7 +119,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   5: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 5,
     white: "R. Praggnanandhaa",
@@ -136,7 +136,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   6: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 6,
     white: "Anish Giri",
@@ -153,7 +153,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   7: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 7,
     white: "M. Vachier-Lagrave",
@@ -170,7 +170,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   8: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 8,
     white: "Levon Aronian",
@@ -187,7 +187,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   9: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 9,
     white: "Richard Rapport",
@@ -204,7 +204,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   10: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 10,
     white: "Vidit Gujrathi",
@@ -221,7 +221,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   11: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 11,
     white: "Rameshbabu Vaishali",
@@ -238,7 +238,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   12: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 12,
     white: "Anna Muzychuk",
@@ -255,7 +255,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   13: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 13,
     white: "Wei Yi",
@@ -272,7 +272,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   14: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 14,
     white: "Santosh Gujrathi",
@@ -289,7 +289,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   15: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 15,
     white: "Vincent Keymer",
@@ -306,7 +306,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   16: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 16,
     white: "Boris Gelfand",
@@ -323,7 +323,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   17: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 17,
     white: "Daniil Dubov",
@@ -340,7 +340,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   18: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 18,
     white: "Vladimir Kramnik",
@@ -357,7 +357,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   19: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 19,
     white: "Judit Polgar",
@@ -374,7 +374,7 @@ const worldCupRound1: TournamentRoundManifest = {
     status: "final",
   },
   20: {
-    tournamentSlug: "worldcup",
+    tournamentSlug: "worldcup2025",
     round: 1,
     board: 20,
     white: "Tania Sachdev",
@@ -393,7 +393,7 @@ const worldCupRound1: TournamentRoundManifest = {
 };
 
 const manifests: TournamentManifests = {
-  worldcup: {
+  worldcup2025: {
     1: worldCupRound1,
   },
 };

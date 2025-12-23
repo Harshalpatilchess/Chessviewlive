@@ -16,11 +16,7 @@ export function pgnToPlies(pgn?: string): Ply[] {
 
   const reader = new Chess();
   try {
-    const loaded = reader.loadPgn(pgn, { sloppy: true } as any) as unknown as boolean;
-    if (!loaded) {
-      console.warn("[pgnToPlies] Failed to load PGN", { snippet: pgn.slice(0, 200) });
-      return [];
-    }
+    reader.loadPgn(pgn, { strict: false });
   } catch (error) {
     console.warn("[pgnToPlies] Exception while loading PGN", {
       snippet: pgn.slice(0, 200),

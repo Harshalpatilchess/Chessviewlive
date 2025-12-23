@@ -1,6 +1,15 @@
 export type EngineBackend = "js-worker" | "wasm" | "wasm-nnue" | "cloud";
 
 export type EngineProfileId = "light" | "standard" | "pro";
+export type AnalysisQuality = "light" | "standard" | "pro";
+
+export const ANALYSIS_QUALITY_PRESETS: AnalysisQuality[] = ["light", "standard", "pro"];
+
+export const ANALYSIS_QUALITY_PASSES_MS: Record<AnalysisQuality, number[]> = {
+  light: [150, 300, 600],
+  standard: [150, 300, 600, 1200],
+  pro: [150, 300, 600, 1200, 2000, 4000],
+};
 export type EngineProfileConfig = {
   id: EngineProfileId;
   label: string;
@@ -69,6 +78,8 @@ export type CloudEngineRequest = {
   requestId: string;
   searchMode?: EngineSearchMode;
   targetDepth?: number;
+  refine?: boolean;
+  refineTargetDepth?: number;
   threads?: number;
   hashMb?: number;
   skillLevel?: number;
@@ -105,7 +116,7 @@ export interface EngineConfig {
   wasmNnueWorkerHint?: string;
   enableWasmNnue?: boolean;
   enableCloud?: boolean;
-  backends?: Record<EngineBackend, EngineBackendConfig>;
+  backends?: Partial<Record<EngineBackend, EngineBackendConfig>>;
   defaults?: EngineConfigDefaults;
 }
 
@@ -126,7 +137,7 @@ export const ENGINE_PROFILES: Record<EngineProfileId, EngineProfileConfig> = {
     label: "Standard",
     description: "Balanced depth and speed",
     movetimeMs: 4000,
-    multiPv: 2,
+    multiPv: 1,
     threads: 6,
     hashMb: 256,
     depthSteps: [24, 30, 36],
@@ -137,7 +148,7 @@ export const ENGINE_PROFILES: Record<EngineProfileId, EngineProfileConfig> = {
     label: "Pro",
     description: "Slower, deeper search",
     movetimeMs: 8000,
-    multiPv: 3,
+    multiPv: 1,
     threads: 8,
     hashMb: 512,
     depthSteps: [30, 38, 46],
@@ -213,33 +224,9 @@ const ACTIVE_BACKEND: EngineBackend = (() => {
 })();
 
 export const CURRENT_ENGINE_CONFIG: EngineConfig = {
-  activeBackend: ACTIVE_BACKEND,
-  workerScriptPath: "/engine/stockfish-asm.js",
-  wasmWorkerScriptPath: "/engine/stockfish-wasm-worker.js",
-  enableWasm: ENABLE_WASM_EXPERIMENT,
-  wasmNnueWorkerHint: "../../workers/stockfish-wasm-nnue.ts",
-  enableWasmNnue: ENABLE_WASM_NNUE_EXPERIMENT,
+  activeBackend: "cloud",
   enableCloud: ENABLE_CLOUD_ENGINE,
   backends: {
-    "js-worker": {
-      backend: "js-worker",
-      workerScriptPath: "/engine/stockfish-asm.js",
-      label: "js",
-    },
-    wasm: {
-      backend: "wasm",
-      workerScriptPath: "/engine/stockfish-wasm-worker.js",
-      enabled: ENABLE_WASM_EXPERIMENT,
-      label: "wasm",
-    },
-    "wasm-nnue": {
-      backend: "wasm-nnue",
-      workerModulePath: "../../workers/stockfish-wasm-nnue.ts",
-      workerScriptPath: "/engine/stockfish-wasm-worker.js",
-      enabled: ENABLE_WASM_NNUE_EXPERIMENT,
-      hint: "../../workers/stockfish-wasm-nnue.ts",
-      label: "wasm-nnue",
-    },
     cloud: {
       backend: "cloud",
       enabled: ENABLE_CLOUD_ENGINE,
@@ -251,7 +238,7 @@ export const CURRENT_ENGINE_CONFIG: EngineConfig = {
   defaults: {
     threads: 2,
     hashMb: 256,
-    multiPv: 2,
+    multiPv: 1,
     movetimeMs: 1800,
     searchMode: "depth",
     depthSteps: ENGINE_PROFILES[DEFAULT_ENGINE_PROFILE_ID].depthSteps,

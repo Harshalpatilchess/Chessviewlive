@@ -24,9 +24,10 @@ import { WORLD_CUP_DEMO_PLIES, pliesFromPgn } from "@/lib/mockGames";
 import { pliesToFenAt } from "@/lib/chess/pgn";
 import { buildBoardPaths } from "@/lib/paths";
 import { mapEvaluationToBar, type EvaluationBarMapping } from "@/lib/engine/evalMapping";
-import { CURRENT_ENGINE_CONFIG, type EngineProfileId } from "@/lib/engine/config";
+import type { EngineProfileId } from "@/lib/engine/config";
 import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
-import useStockfishEvaluation from "@/lib/engine/useStockfishEvaluation";
+import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
+import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
 import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
 import {
   getBoardPlayers,
@@ -300,13 +301,13 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
   const currentBoardLabel = useMemo(() => formatBoardLabel(boardId), [boardId]);
   const videoRoomLabel = overlayLabel ?? currentBoardLabel;
   const plies = useMemo(() => {
-    if (boardSelection.tournamentSlug === "worldcup" && boardSelection.round === 1) {
+    if (boardSelection.tournamentSlug === "worldcup2025" && boardSelection.round === 1) {
       const pgn = getWorldCupPgnForBoard(boardSelection.board);
       const parsed = pliesFromPgn(pgn);
       if (parsed.length) {
         return parsed;
       }
-      console.warn("[worldcup] Falling back to demo plies for board", {
+      console.warn("[worldcup2025] Falling back to demo plies for board", {
         boardNumber: boardSelection.board,
         boardId,
       });
@@ -325,7 +326,7 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
     setCurrentMoveIndex(plies.length - 1);
   }, [plies.length]);
   const [engineEnabled, setEngineEnabled] = useState(false);
-  const [orientation, setOrientation] = useState<Orientation>("white");
+  const { orientation, toggleOrientation: handleFlip } = usePersistentBoardOrientation("white");
   const [gaugeEnabled, setGaugeEnabled] = useState(true);
   const liveIndex = plies.length - 1;
   const canPrev = currentMoveIndex > -1;
@@ -338,12 +339,41 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
     return pliesToFenAt(plies, currentMoveIndex);
   }, [boardManifestGame?.finalFen, boardStatus, currentMoveIndex, plies]);
 
-  const useEngineEvaluation =
-    CURRENT_ENGINE_CONFIG.activeBackend === "cloud" ? useCloudEngineEvaluation : useStockfishEvaluation;
+  const handlePrevOfficial = useCallback(() => {
+    setCurrentMoveIndex(prev => Math.max(-1, prev - 1));
+  }, []);
+  const handleNextOfficial = useCallback(() => {
+    if (liveIndex < 0) return;
+    setCurrentMoveIndex(prev => Math.min(liveIndex, prev + 1));
+  }, [liveIndex]);
+
+  const {
+    analysisViewActive,
+    analysisBranches,
+    activeAnalysisAnchorPly,
+    analysisCursorNodeId,
+    displayFen,
+    exitAnalysisView,
+    selectAnalysisMove,
+    promoteAnalysisNode,
+    deleteAnalysisLine,
+    deleteAnalysisFromHere,
+    onPieceDrop: handlePieceDrop,
+  } = useBoardAnalysis({
+    boardId,
+    tournamentId,
+    plies,
+    currentMoveIndex,
+    officialFen: boardPosition,
+    onOfficialPrev: handlePrevOfficial,
+    onOfficialNext: handleNextOfficial,
+  });
+
   const {
     eval: engineEval,
     bestLines: engineLines,
     isEvaluating: engineThinking,
+    evaluatedFen: engineEvaluatedFen,
     engineName,
     engineBackend,
     setEngineBackend,
@@ -356,8 +386,8 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
     setDepthIndex,
     setMultiPv,
     setActiveProfileId,
-  } = useEngineEvaluation(
-    boardPosition,
+  } = useCloudEngineEvaluation(
+    displayFen,
     {
       enabled: engineEnabled,
     }
@@ -374,28 +404,31 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
     },
     [setDepthIndex]
   );
+  const engineDisplayFen = engineEvaluatedFen ?? displayFen;
   const { value: evaluation, label: evaluationLabel, advantage: evaluationAdvantage } = useMemo<EvaluationBarMapping>(() => {
     if (!gaugeEnabled) {
       return { value: null, label: null, advantage: null };
     }
-    return mapEvaluationToBar(engineEval, boardPosition, { enabled: engineEnabled });
-  }, [boardPosition, engineEnabled, engineEval, gaugeEnabled]);
+    return mapEvaluationToBar(engineEval, engineDisplayFen, { enabled: engineEnabled });
+  }, [engineDisplayFen, engineEnabled, engineEval, gaugeEnabled]);
   const handlePrev = useCallback(() => {
-    setCurrentMoveIndex(prev => Math.max(-1, prev - 1));
-  }, []);
+    exitAnalysisView();
+    handlePrevOfficial();
+  }, [exitAnalysisView, handlePrevOfficial]);
   const handleNext = useCallback(() => {
+    exitAnalysisView();
+    handleNextOfficial();
+  }, [exitAnalysisView, handleNextOfficial]);
+  const handleLive = useCallback(() => {
     if (liveIndex < 0) return;
-    setCurrentMoveIndex(prev => Math.min(liveIndex, prev + 1));
-  }, [liveIndex]);
-  const handleLive = () => {
-    if (liveIndex < 0) return;
+    exitAnalysisView();
     setCurrentMoveIndex(liveIndex);
-  };
-  const handleFlip = () => setOrientation(prev => (prev === "white" ? "black" : "white"));
+  }, [exitAnalysisView, liveIndex]);
   const toggleEval = () => setGaugeEnabled(prev => !prev);
   const handleNotationPlySelect = useCallback(
     (plyIdx: number) => {
       if (!Number.isFinite(plyIdx)) return;
+      exitAnalysisView();
       if (plyIdx < 0) {
         setCurrentMoveIndex(-1);
         return;
@@ -406,27 +439,8 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
       }
       setCurrentMoveIndex(Math.min(plyIdx, liveIndex));
     },
-    [liveIndex]
+    [exitAnalysisView, liveIndex]
   );
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
-      }
-      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-        event.preventDefault();
-        handleNext();
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-        event.preventDefault();
-        handlePrev();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [handleNext, handlePrev]);
   useEffect(() => {
     const ply = currentMoveIndex >= 0 ? plies[currentMoveIndex] : null;
     console.log("[LiveBoard] currentMoveIndex", {
@@ -1673,7 +1687,7 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
       boardId={boardId}
       boardDomId="cv-live-board"
       boardOrientation={orientation}
-      boardPosition={boardPosition}
+      boardPosition={displayFen}
       showEval={gaugeEnabled}
       evaluation={evaluation}
       evaluationLabel={evaluationLabel}
@@ -1720,6 +1734,16 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
       nextBoardHref={nextBoardHref}
       boardNumber={boardNumber}
       liveVersion={liveFeedVersion}
+      analysisViewActive={analysisViewActive}
+      analysisBranches={analysisBranches}
+      activeAnalysisAnchorPly={activeAnalysisAnchorPly}
+      analysisCursorNodeId={analysisCursorNodeId}
+      onExitAnalysisView={exitAnalysisView}
+      onSelectAnalysisMove={selectAnalysisMove}
+      onPromoteAnalysisNode={promoteAnalysisNode}
+      onDeleteAnalysisLine={deleteAnalysisLine}
+      onDeleteAnalysisFromHere={deleteAnalysisFromHere}
+      onPieceDrop={handlePieceDrop}
       mediaContainerClass={mediaContainerClass}
       videoPane={{
         containerRef: mediaWrapperRef,
@@ -1735,7 +1759,6 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
         setEngineOn: setEngineEnabled,
         engineEval,
         engineLines,
-        engineThinking: engineEnabled && engineThinking,
         engineProfileId: activeProfileId,
         engineProfile: activeProfileConfig,
         setEngineProfileId: handleProfileChange,
@@ -1745,7 +1768,7 @@ export default function LiveBoardPage(props: { params: Promise<RouteParams> }) {
         targetDepth,
         setMultiPv,
         setDepthIndex: handleDepthChange,
-        fen: boardPosition,
+        fen: engineDisplayFen,
         engineName,
         engineBackend,
         setEngineBackend,

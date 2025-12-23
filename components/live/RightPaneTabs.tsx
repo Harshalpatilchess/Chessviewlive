@@ -1,42 +1,46 @@
 "use client";
 
-import Link from "next/link";
-import { useMemo, useRef, useState, useEffect } from "react";
+import {
+  Fragment,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useEffect,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { Ply } from "@/lib/chess/pgn";
 import NotationList from "@/components/viewer/NotationList";
 import StockfishPanel from "@/components/live/StockfishPanel";
-import Flag from "@/components/live/Flag";
 import { WORLD_CUP_DEMO_PLIES } from "@/lib/mockGames";
-import type { GameResult, GameStatus } from "@/lib/tournamentManifest";
 import type { StockfishEval, StockfishLine } from "@/lib/engine/useStockfishEvaluation";
 import { DEBUG_ENGINE_SWITCHER, type EngineBackend, type EngineProfileConfig, type EngineProfileId } from "@/lib/engine/config";
-import useMiniBoardClock from "@/lib/live/useMiniBoardClock";
-import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
+import { BoardsNavigation } from "@/components/boards/BoardsNavigation";
+import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
 
-type BoardNavigationPlayer = {
-  name: string;
-  title?: string | null;
-  rating?: number;
-  flag?: string;
+type AnalysisBranch = {
+  anchorPly: number;
+  anchorFullmoveNumber: number;
+  anchorTurn: "w" | "b";
+  startFen: string;
+  rootChildren: string[];
+  rootMainChildId: string | null;
+  nodesById: Record<
+    string,
+    {
+      id: string;
+      san: string;
+      fenAfter: string;
+      parentId: string | null;
+      children: string[];
+      mainChildId: string | null;
+    }
+  >;
 };
 
-type BoardNavigationEntry = {
-  boardId: string;
-  boardNumber: number;
-  result?: GameResult;
-  status?: GameStatus;
-  whiteClock?: string | null;
-  blackClock?: string | null;
-  whiteTimeMs?: number | null;
-  blackTimeMs?: number | null;
-  sideToMove?: "white" | "black" | null;
-  evaluation?: number | null;
-  finalFen?: string | null;
-  moveList?: string[] | null;
-  white: BoardNavigationPlayer;
-  black: BoardNavigationPlayer;
-};
+type NotationInsertion = { key: string; afterPlyIndex: number; content: ReactNode };
 
 type RightPaneTabsProps = {
   engineOn: boolean;
@@ -46,7 +50,6 @@ type RightPaneTabsProps = {
   onMoveSelect: (i: number) => void;
   engineEval?: StockfishEval;
   engineLines?: StockfishLine[];
-  engineThinking?: boolean;
   engineName?: string;
   engineBackend?: EngineBackend;
   setEngineBackend?: (backend: EngineBackend) => void;
@@ -60,22 +63,43 @@ type RightPaneTabsProps = {
   engineProfile?: EngineProfileConfig;
   setEngineProfileId?: (value: EngineProfileId) => void;
   fen?: string | null;
+  analysisViewActive?: boolean;
+  analysisBranches?: AnalysisBranch[] | null;
+  activeAnalysisAnchorPly?: number | null;
+  analysisCursorNodeId?: string | null;
+  onExitAnalysisView?: () => void;
+  onSelectAnalysisMove?: (anchorPly: number, nodeId: string | null) => void;
+  onPromoteAnalysisNode?: (anchorPly: number, nodeId: string) => void;
+  onDeleteAnalysisLine?: (anchorPly: number, nodeId: string) => void;
+  onDeleteAnalysisFromHere?: (anchorPly: number, nodeId: string) => void;
   boardNavigation?: BoardNavigationEntry[] | null;
   currentBoardId?: string;
-  mode?: "live" | "replay";
 };
 
 type TabKey = "notation" | "live" | "boards";
 
-const TabButton = ({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) => (
+const TabButton = ({
+  label,
+  active,
+  onClick,
+  indicator,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  indicator?: boolean;
+}) => (
   <button
     type="button"
     onClick={onClick}
-    className={`relative flex-1 rounded-full px-4 py-2 text-sm font-semibold transition ${
+    className={`relative flex-none shrink-0 whitespace-nowrap rounded-full px-4 py-2.5 text-sm font-semibold transition lg:flex-1 ${
       active ? "bg-white/15 text-white" : "text-slate-400 hover:text-white"
     }`}
   >
-    {label}
+    <span className="inline-flex items-center justify-center gap-2">
+      {label}
+      {indicator ? <span className="h-2 w-2 rounded-full bg-rose-400" aria-label="Variation active" /> : null}
+    </span>
     {active ? <span className="absolute inset-x-4 bottom-1 h-1 rounded-full bg-emerald-400" /> : null}
   </button>
 );
@@ -86,207 +110,130 @@ const clampDepthIndex = (value: number, steps: number[]) => {
   return Math.max(0, Math.min(maxIndex, normalized));
 };
 
-const BoardsNavigationList = ({
-  boards = [],
-  currentBoardId,
-  mode = "live",
-  activePane,
-}: {
-  boards?: BoardNavigationEntry[];
-  currentBoardId?: string;
-  mode?: "live" | "replay";
-  activePane: TabKey;
-}) => {
-  const BoardsNavigationCard = ({ board }: { board: BoardNavigationEntry }) => {
-    const isActive = currentBoardId === board.boardId;
-    const paneQuery = activePane ?? "notation";
-    const normalizedResult = normalizeResult(board.result);
-    const isFinished = board.status === "final" || (normalizedResult && normalizedResult !== "·");
-    const isLive = board.status === "live" && !isFinished;
-    const hrefBase = isFinished ? `/replay/${board.boardId}` : `/live/${board.boardId}`;
-    const href = `${hrefBase}?pane=${paneQuery}`;
-    const {
-      whiteTimeLabel,
-      blackTimeLabel,
-      isWhiteInTimeTrouble,
-      isBlackInTimeTrouble,
-    } = useMiniBoardClock({
-      status: isLive ? "live" : "finished",
-      whiteTimeMs: board.whiteTimeMs ?? undefined,
-      blackTimeMs: board.blackTimeMs ?? undefined,
-      sideToMove: board.sideToMove ?? null,
-    });
-    const baseClass =
-      "relative flex w-full min-w-0 items-stretch gap-1.5 rounded-2xl border px-2 py-1 transition-all duration-150 cursor-pointer shadow-sm";
-    const activeClass = isActive
-      ? "border-sky-200/90 bg-slate-900/95 ring-1 ring-sky-300/25 shadow-[0_10px_34px_rgba(56,189,248,0.14)]"
-      : "border-slate-700/80 bg-slate-900/95";
-    const hoverClass = isActive
-      ? "hover:border-sky-100/90 hover:bg-slate-800"
-      : "hover:border-slate-500/85 hover:bg-slate-800/90 hover:shadow-[0_12px_34px_rgba(0,0,0,0.38)]";
-    const fillPercent = renderEvalFill(board.evaluation);
-    const statusLabel = getBoardStatusLabel(board);
-    const badgeClass = isActive
-      ? "border-sky-300/60 bg-sky-400/15 text-sky-50"
-      : "border-slate-600 bg-slate-900 text-slate-100";
-    const badgeTone =
-      statusLabel === "1-0"
-        ? "border-emerald-400/70 bg-emerald-400/15 text-emerald-50"
-        : statusLabel === "0-1"
-          ? "border-rose-400/70 bg-rose-400/15 text-rose-50"
-          : statusLabel === "½-½"
-            ? "border-amber-300/60 bg-amber-200/12 text-amber-50"
-            : "";
+type AnalysisRenderToken = { nodeId: string; text: string };
 
-    return (
-      <Link
-        key={board.boardId}
-        href={href}
-        scroll={false}
-        aria-pressed={isActive}
-        className={`${baseClass} ${activeClass} ${hoverClass} group overflow-hidden`}
-      >
-        <div className="flex w-10 shrink-0 flex-col items-center justify-center rounded-lg border border-slate-700/70 bg-slate-900/80 px-1 py-1 text-center">
-          <span className="text-[9px] uppercase tracking-wide text-slate-300 leading-tight font-semibold">Bd</span>
-          <span className="text-[11px] font-semibold leading-tight text-slate-50">{board.boardNumber}</span>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col justify-center gap-1.5">
-          <div className={`transition-colors duration-200 ${isLive && isWhiteInTimeTrouble ? "text-rose-50" : ""}`}>
-            <PlayerLine player={board.white} />
-          </div>
-          {isLive ? (
-            <div className="flex w-full justify-start px-0.5">
-              <span
-                className={`inline-flex items-center rounded-md border bg-slate-800/80 px-2 py-[3px] text-[10px] font-medium leading-tight transition-colors transition-shadow duration-200 ${
-                  isWhiteInTimeTrouble
-                    ? "border-rose-400/70 text-rose-50 shadow-[0_0_0_1px_rgba(248,113,113,0.25)]"
-                    : "border-slate-600/60 text-slate-100"
-                }`}
-              >
-                {whiteTimeLabel ?? "—:—"}
-              </span>
-            </div>
-          ) : (
-            <div className="flex w-full justify-center px-0.5">
-              <span
-                className={`inline-flex items-center justify-center rounded-full border px-2 py-[3px] text-[10px] font-semibold uppercase tracking-[0.08em] leading-tight ${badgeClass} ${badgeTone}`}
-              >
-                {statusLabel}
-              </span>
-            </div>
-          )}
-          {isLive ? (
-            <div className="flex w-full justify-start px-0.5">
-              <span
-                className={`inline-flex items-center rounded-md border bg-slate-800/80 px-2 py-[3px] text-[10px] font-medium leading-tight transition-colors transition-shadow duration-200 ${
-                  isBlackInTimeTrouble
-                    ? "border-rose-400/70 text-rose-50 shadow-[0_0_0_1px_rgba(248,113,113,0.25)]"
-                    : "border-slate-600/60 text-slate-100"
-                }`}
-              >
-                {blackTimeLabel ?? "—:—"}
-              </span>
-            </div>
-          ) : null}
-          <div className={`transition-colors duration-200 ${isLive && isBlackInTimeTrouble ? "text-rose-50" : ""}`}>
-            <PlayerLine player={board.black} />
-          </div>
-        </div>
-        <div className="flex w-16 shrink-0 flex-col items-center justify-center gap-1 pl-1">
-          {isFinished && board.finalFen ? (
-            <div className="w-full overflow-hidden rounded-xl border border-white/10 bg-slate-950/60 shadow-inner">
-              <BroadcastReactBoard
-                boardId={`${board.boardId}-mini`}
-                position={board.finalFen}
-                boardOrientation="white"
-                draggable={false}
-                showNotation={false}
-              />
-            </div>
-          ) : null}
-          <div className="relative h-16 w-2 overflow-hidden rounded-full border border-slate-700/60 bg-slate-800">
-            <div className="absolute inset-x-[-2px] top-1/2 h-px bg-amber-200/80" />
-            <div
-              className="absolute inset-x-0 bottom-0 w-full bg-emerald-400/80"
-              style={{ height: `${fillPercent}%` }}
-            />
-          </div>
-        </div>
-        {isActive ? (
-          <span className="absolute inset-y-0 left-0 w-1 rounded-l-full bg-sky-300" aria-hidden />
-        ) : null}
-      </Link>
-    );
-  };
+const parseFenMeta = (fen: string): { fullmoveNumber: number; turn: "w" | "b" } | null => {
+  if (typeof fen !== "string") return null;
+  const parts = fen.trim().split(/\s+/);
+  if (parts.length < 6) return null;
+  const turn = parts[1] === "b" ? "b" : "w";
+  const fullmoveRaw = Number.parseInt(parts[5] ?? "1", 10);
+  const fullmoveNumber = Number.isFinite(fullmoveRaw) && fullmoveRaw > 0 ? fullmoveRaw : 1;
+  return { fullmoveNumber, turn };
+};
 
-  const normalizeResult = (result?: GameResult): string | null => {
-    if (!result || result === "·" || result === "*") return null;
-    return result === "1/2-1/2" ? "½-½" : result;
-  };
-
-  const getBoardStatusLabel = (entry: BoardNavigationEntry): string => {
-    const normalizedResult = normalizeResult(entry.result);
-    if (entry.status === "final" && normalizedResult) return normalizedResult;
-    if (entry.status === "live") return "Live";
-    if (entry.status === "scheduled") return "Scheduled";
-    if (!entry.status || entry.status === "unknown") {
-      return normalizedResult ?? "—";
-    }
-    return normalizedResult ?? "—";
-  };
-
-  if (!boards || boards.length === 0) {
-    return (
-      <div className="flex flex-1 items-center justify-center px-2 pb-3 text-sm text-slate-400">
-        No other boards available for this round yet.
-      </div>
-    );
+const buildMainLineTokens = (branch: AnalysisBranch): AnalysisRenderToken[] => {
+  const nodesById = branch.nodesById ?? {};
+  const startFen = typeof branch.startFen === "string" ? branch.startFen : "";
+  const tokens: AnalysisRenderToken[] = [];
+  let currentId: string | null = branch.rootMainChildId ?? null;
+  let fenBefore = startFen;
+  let isFirst = true;
+  const safetyLimit = 200;
+  for (let safety = 0; safety < safetyLimit && currentId; safety += 1) {
+    const node = nodesById[currentId];
+    if (!node) break;
+    const meta = parseFenMeta(fenBefore);
+    const moveNo =
+      Number.isFinite(meta?.fullmoveNumber) && (meta?.fullmoveNumber ?? 0) > 0
+        ? (meta?.fullmoveNumber as number)
+        : Number.isFinite(branch.anchorFullmoveNumber) && branch.anchorFullmoveNumber > 0
+          ? branch.anchorFullmoveNumber
+          : 1;
+    const turn = meta?.turn ?? (branch.anchorTurn === "b" ? "b" : "w");
+    const san = typeof node.san === "string" && node.san.trim().length > 0 ? node.san.trim() : "…";
+    const text =
+      turn === "w" ? `${moveNo}.${san}` : isFirst ? `${moveNo}...${san}` : san;
+    tokens.push({ nodeId: node.id, text });
+    fenBefore = node.fenAfter;
+    isFirst = false;
+    currentId = node.mainChildId ?? null;
   }
+  return tokens;
+};
 
-  const PlayerLine = ({ player }: { player: BoardNavigationPlayer }) => (
-    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-700/40 bg-slate-900/70 px-2 py-1">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        {player.flag ? (
-          <Flag country={player.flag} className="text-lg leading-none" />
-        ) : (
-          <span className="h-5 w-5 rounded-full border border-white/10 bg-slate-800" aria-hidden />
-        )}
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          {player.title ? (
-            <span className="rounded-full border border-amber-200/50 bg-amber-200/10 px-1.5 py-[2px] text-[9px] font-semibold uppercase tracking-wide text-amber-100">
-              {player.title}
-            </span>
-          ) : null}
-          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-tight text-slate-50">
-            {player.name}
-          </span>
-        </div>
-      </div>
-      {player.rating ? (
-        <span className="ml-auto whitespace-nowrap text-[12px] font-medium text-slate-200 tabular-nums" aria-label="Rating">
-          {player.rating}
-        </span>
-      ) : null}
-    </div>
-  );
+type VariationLine = { key: string; depth: number; tokens: AnalysisRenderToken[] };
 
-  const renderEvalFill = (evaluation?: number | null) => {
-    if (evaluation === null || evaluation === undefined || Number.isNaN(evaluation)) {
-      return 50;
+const collectVariationLines = (branch: AnalysisBranch): VariationLine[] => {
+  const nodesById = branch.nodesById ?? {};
+  const startFen = typeof branch.startFen === "string" ? branch.startFen : "";
+  const rootChildren = Array.isArray(branch.rootChildren) ? branch.rootChildren : [];
+  const rootMainChildId = branch.rootMainChildId ?? null;
+  const lines: VariationLine[] = [];
+  const processedParents = new Set<string>();
+
+  const buildLineFromStart = (startNodeId: string, fenBeforeFirst: string): AnalysisRenderToken[] => {
+    const tokens: AnalysisRenderToken[] = [];
+    let currentId: string | null = startNodeId;
+    let fenBefore = fenBeforeFirst;
+    let isFirst = true;
+    const safetyLimit = 200;
+    for (let safety = 0; safety < safetyLimit && currentId; safety += 1) {
+      const node: AnalysisBranch["nodesById"][string] | undefined = nodesById[currentId];
+      if (!node) break;
+      const meta = parseFenMeta(fenBefore);
+      const moveNo =
+        Number.isFinite(meta?.fullmoveNumber) && (meta?.fullmoveNumber ?? 0) > 0
+          ? (meta?.fullmoveNumber as number)
+          : Number.isFinite(branch.anchorFullmoveNumber) && branch.anchorFullmoveNumber > 0
+            ? branch.anchorFullmoveNumber
+            : 1;
+      const turn = meta?.turn ?? (branch.anchorTurn === "b" ? "b" : "w");
+      const san = typeof node.san === "string" && node.san.trim().length > 0 ? node.san.trim() : "…";
+      const text =
+        turn === "w" ? `${moveNo}.${san}` : isFirst ? `${moveNo}...${san}` : san;
+      tokens.push({ nodeId: node.id, text });
+      fenBefore = node.fenAfter;
+      isFirst = false;
+      currentId = node.mainChildId ?? null;
     }
-    const clamped = Math.max(-5, Math.min(5, evaluation));
-    return 50 + (clamped / 5) * 50;
+    return tokens;
   };
 
-  return (
-    <div className="px-1.5 pb-1 sm:px-2 overflow-x-hidden">
-      <div className="grid grid-cols-2 gap-x-2 gap-y-1 overflow-x-hidden">
-        {boards.map(board => (
-          <BoardsNavigationCard key={board.boardId} board={board} />
-        ))}
-      </div>
-    </div>
-  );
+  const addLinesForParent = (parentId: string | null, fenBeforeChildMoves: string, depth: number) => {
+    const parentKey = parentId ?? "root";
+    if (processedParents.has(parentKey)) return;
+    processedParents.add(parentKey);
+
+    const children =
+      parentId === null ? rootChildren : (Array.isArray(nodesById[parentId]?.children) ? nodesById[parentId]?.children : []);
+    const mainChildId =
+      parentId === null ? rootMainChildId : (nodesById[parentId]?.mainChildId ?? null);
+    if (!children || children.length === 0) return;
+
+    children.forEach(childId => {
+      if (typeof childId !== "string" || childId.length === 0) return;
+      if (childId === mainChildId) return;
+      const tokens = buildLineFromStart(childId, fenBeforeChildMoves);
+      if (tokens.length === 0) return;
+      lines.push({
+        key: `variation:${branch.anchorPly}:${parentKey}:${childId}`,
+        depth,
+        tokens,
+      });
+      tokens.forEach(token => {
+        const node = nodesById[token.nodeId];
+        if (!node) return;
+        addLinesForParent(node.id, node.fenAfter, depth + 1);
+      });
+    });
+  };
+
+  addLinesForParent(null, startFen, 1);
+  const mainTokens = buildMainLineTokens(branch);
+  mainTokens.forEach(token => {
+    const node = nodesById[token.nodeId];
+    if (!node) return;
+    addLinesForParent(node.id, node.fenAfter, 1);
+  });
+  return lines;
+};
+
+type AnalysisContextMenuState = {
+  anchorPly: number;
+  nodeId: string;
+  x: number;
+  y: number;
 };
 
 const RightPaneTabs = ({
@@ -294,7 +241,6 @@ const RightPaneTabs = ({
   setEngineOn,
   engineEval,
   engineLines,
-  engineThinking,
   engineName,
   engineBackend = "js-worker",
   setEngineBackend,
@@ -308,12 +254,20 @@ const RightPaneTabs = ({
   engineProfile,
   setEngineProfileId,
   fen,
+  analysisViewActive,
+  analysisBranches,
+  activeAnalysisAnchorPly,
+  analysisCursorNodeId,
+  onExitAnalysisView,
+  onSelectAnalysisMove,
+  onPromoteAnalysisNode,
+  onDeleteAnalysisLine,
+  onDeleteAnalysisFromHere,
   plies,
   currentMoveIndex,
   onMoveSelect,
   boardNavigation,
   currentBoardId,
-  mode = "live",
 }: RightPaneTabsProps) => {
   const searchParams = useSearchParams();
   const pathname = usePathname();
@@ -322,12 +276,219 @@ const RightPaneTabs = ({
   const resolvedPane: TabKey =
     paneParam === "boards" || paneParam === "live" || paneParam === "notation" ? paneParam : "notation";
   const [activeTab, setActiveTab] = useState<TabKey>(resolvedPane);
+  const boardsPaneRef = useRef<HTMLDivElement | null>(null);
+  const [boardsCompactMode, setBoardsCompactMode] = useState(false);
+  const [boardsLockScroll, setBoardsLockScroll] = useState(false);
   useEffect(() => {
     setActiveTab(resolvedPane);
   }, [resolvedPane]);
   const notationScrollRef = useRef<HTMLDivElement | null>(null);
   const boardsData = boardNavigation ?? [];
   const debugEngineSwitcherEnabled = DEBUG_ENGINE_SWITCHER && typeof setEngineBackend === "function";
+  const prevAnalysisActiveRef = useRef(Boolean(analysisViewActive));
+  const [analysisContextMenu, setAnalysisContextMenu] = useState<AnalysisContextMenuState | null>(null);
+  const analysisContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const canShowAnalysisContextMenu =
+    typeof onPromoteAnalysisNode === "function" &&
+    typeof onDeleteAnalysisLine === "function" &&
+    typeof onDeleteAnalysisFromHere === "function";
+
+  const closeAnalysisContextMenu = useCallback(() => {
+    setAnalysisContextMenu(null);
+  }, []);
+
+  useEffect(() => {
+    if (!analysisContextMenu) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) {
+        closeAnalysisContextMenu();
+        return;
+      }
+      if (analysisContextMenuRef.current?.contains(target)) return;
+      closeAnalysisContextMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeAnalysisContextMenu();
+      }
+    };
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [analysisContextMenu, closeAnalysisContextMenu]);
+
+  const openAnalysisContextMenu = useCallback(
+    (event: MouseEvent<HTMLElement>, anchorPly: number, nodeId: string) => {
+      if (!canShowAnalysisContextMenu) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rawX = typeof event.clientX === "number" ? event.clientX : 0;
+      const rawY = typeof event.clientY === "number" ? event.clientY : 0;
+      const padding = 8;
+      const menuWidth = 176;
+      const menuHeight = 124;
+      const maxX = typeof window !== "undefined" ? window.innerWidth - menuWidth - padding : rawX;
+      const maxY = typeof window !== "undefined" ? window.innerHeight - menuHeight - padding : rawY;
+      const x = Math.max(padding, Math.min(rawX, maxX));
+      const y = Math.max(padding, Math.min(rawY, maxY));
+      setAnalysisContextMenu({ anchorPly, nodeId, x, y });
+    },
+    [canShowAnalysisContextMenu]
+  );
+
+  const analysisInsertions = useMemo(() => {
+    if (!analysisBranches || analysisBranches.length === 0) return [];
+    const entries: Array<NotationInsertion | null> = analysisBranches
+      .filter(branch => typeof branch === "object" && branch !== null)
+      .map(branch => {
+        const mainTokens = buildMainLineTokens(branch);
+        const variationLines = collectVariationLines(branch);
+        if (mainTokens.length === 0 && variationLines.length === 0) return null;
+        const isActiveBranch =
+          Boolean(analysisViewActive) && typeof activeAnalysisAnchorPly === "number" && activeAnalysisAnchorPly === branch.anchorPly;
+        const selectedNodeId = isActiveBranch ? analysisCursorNodeId ?? null : null;
+        const selectMove = typeof onSelectAnalysisMove === "function" ? onSelectAnalysisMove : null;
+        return {
+          key: `analysis-${branch.anchorPly}`,
+          afterPlyIndex: branch.anchorPly,
+          content: (
+            <div className="grid grid-cols-[48px_minmax(0,1fr)] gap-2 px-3 py-2">
+              {selectMove ? (
+                <button
+                  type="button"
+                  onClick={event => {
+                    event.stopPropagation();
+                    selectMove(branch.anchorPly, null);
+                  }}
+                  aria-label="Jump to analysis start"
+                  className={`text-[11px] font-semibold transition ${
+                    isActiveBranch && !selectedNodeId ? "text-slate-200" : "text-slate-500 hover:text-slate-200"
+                  }`}
+                >
+                  ↳
+                </button>
+              ) : (
+                <span className="text-[11px] font-semibold text-slate-500" aria-hidden>
+                  ↳
+                </span>
+              )}
+              <div
+                className={`flex items-start gap-2 rounded-lg border px-2.5 py-2 ${
+                  isActiveBranch
+                    ? "border-sky-200/20 bg-white/5"
+                    : "border-white/10 bg-transparent"
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-col gap-1 text-xs leading-relaxed text-slate-200/90 sm:text-sm">
+                    <div>
+                      {mainTokens.map((token, idx) => {
+                        const isSelected = isActiveBranch && selectedNodeId === token.nodeId;
+                        const baseClasses = "inline-flex items-baseline rounded px-1 py-0.5 transition";
+                        const clickableClasses = selectMove
+                          ? "hover:bg-white/5 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25"
+                          : "";
+                        const selectedClasses = isSelected ? "bg-white/10 underline" : "";
+                        const className = `${baseClasses} ${clickableClasses} ${selectedClasses}`.trim();
+                        return (
+                          <Fragment key={`${branch.anchorPly}-${token.nodeId}`}>
+                            {selectMove ? (
+                              <button
+                                type="button"
+                                onClick={event => {
+                                  event.stopPropagation();
+                                  closeAnalysisContextMenu();
+                                  selectMove(branch.anchorPly, token.nodeId);
+                                }}
+                                onContextMenu={event => openAnalysisContextMenu(event, branch.anchorPly, token.nodeId)}
+                                aria-current={isSelected ? "true" : undefined}
+                                className={className}
+                              >
+                                {token.text}
+                              </button>
+                            ) : (
+                              <span className={className}>{token.text}</span>
+                            )}
+                            {idx < mainTokens.length - 1 ? " " : null}
+                          </Fragment>
+                        );
+                      })}
+                    </div>
+                    {variationLines.length > 0 ? (
+                      <div className="flex flex-col gap-1">
+                        {variationLines.map(line => (
+                          <div
+                            key={line.key}
+                            style={{ marginLeft: Math.max(0, Math.min(line.depth, 6)) * 12 }}
+                            className="border-l border-white/10 pl-3"
+                          >
+                            {line.tokens.map((token, idx) => {
+                              const isSelected = isActiveBranch && selectedNodeId === token.nodeId;
+                              const baseClasses = "inline-flex items-baseline rounded px-1 py-0.5 transition";
+                              const clickableClasses = selectMove
+                                ? "hover:bg-white/5 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25"
+                                : "";
+                              const selectedClasses = isSelected ? "bg-white/10 underline" : "";
+                              const className = `${baseClasses} ${clickableClasses} ${selectedClasses}`.trim();
+                              return (
+                                <Fragment key={`${line.key}-${token.nodeId}`}>
+                                  {selectMove ? (
+                                    <button
+                                      type="button"
+                                      onClick={event => {
+                                        event.stopPropagation();
+                                        closeAnalysisContextMenu();
+                                        selectMove(branch.anchorPly, token.nodeId);
+                                      }}
+                                      onContextMenu={event => openAnalysisContextMenu(event, branch.anchorPly, token.nodeId)}
+                                      aria-current={isSelected ? "true" : undefined}
+                                      className={className}
+                                    >
+                                      {token.text}
+                                    </button>
+                                  ) : (
+                                    <span className={className}>{token.text}</span>
+                                  )}
+                                  {idx < line.tokens.length - 1 ? " " : null}
+                                </Fragment>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+                {isActiveBranch && typeof onExitAnalysisView === "function" ? (
+                  <button
+                    type="button"
+                    onClick={onExitAnalysisView}
+                    className="ml-auto rounded-full border border-white/15 bg-slate-900/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-white transition hover:border-sky-200/40 hover:bg-slate-900"
+                  >
+                    LIVE
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ),
+        };
+      })
+    return entries.filter((entry): entry is NotationInsertion => entry !== null);
+  }, [
+    activeAnalysisAnchorPly,
+    analysisBranches,
+    analysisCursorNodeId,
+    analysisViewActive,
+    closeAnalysisContextMenu,
+    onExitAnalysisView,
+    onSelectAnalysisMove,
+    openAnalysisContextMenu,
+  ]);
 
   const resolvedPlies = useMemo(
     () => (plies && plies.length > 0 ? plies : WORLD_CUP_DEMO_PLIES),
@@ -338,7 +499,7 @@ const RightPaneTabs = ({
   const displayMultiPv =
     typeof multiPv === "number" && Number.isFinite(multiPv)
       ? multiPv
-      : engineProfile?.multiPv ?? 1;
+      : 1;
   const resolvedDepthSteps = useMemo(() => {
     const baseSteps =
       (Array.isArray(depthSteps) && depthSteps.length ? depthSteps : engineProfile?.depthSteps) ?? [];
@@ -369,7 +530,7 @@ const RightPaneTabs = ({
       ? Math.min(Math.max(currentMoveIndex, -1), resolvedPlies.length - 1)
       : -1;
 
-  const handleMoveClick = (plyIdx: number) => {
+  const handleMoveClick = useCallback((plyIdx: number) => {
     if (typeof plyIdx !== "number" || Number.isNaN(plyIdx)) return;
     if (plyIdx < 0) {
       onMoveSelect(-1);
@@ -377,20 +538,77 @@ const RightPaneTabs = ({
     }
     const maxIndex = resolvedPlies.length > 0 ? resolvedPlies.length - 1 : -1;
     onMoveSelect(Math.min(plyIdx, maxIndex));
-  };
+  }, [onMoveSelect, resolvedPlies.length]);
 
-  const handleTabChange = (nextTab: TabKey) => {
+  const handleTabChange = useCallback((nextTab: TabKey) => {
     setActiveTab(nextTab);
     const params = new URLSearchParams(searchParams?.toString() ?? "");
     params.set("pane", nextTab);
     const qs = params.toString();
     router.replace(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
-  };
+  }, [pathname, router, searchParams]);
+
+  useEffect(() => {
+    const wasActive = prevAnalysisActiveRef.current;
+    const isActive = Boolean(analysisViewActive);
+    prevAnalysisActiveRef.current = isActive;
+    if (!isActive || wasActive) return;
+    if (activeTab === "notation") return;
+    handleTabChange("notation");
+  }, [activeTab, analysisViewActive, handleTabChange]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(min-width: 1024px) and (max-height: 900px)");
+    const apply = () => setBoardsCompactMode(media.matches);
+    apply();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", apply);
+    } else {
+      media.addListener(apply);
+    }
+    return () => {
+      if (typeof media.removeEventListener === "function") {
+        media.removeEventListener("change", apply);
+      } else {
+        media.removeListener(apply);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (activeTab !== "boards") return;
+    const container = boardsPaneRef.current;
+    if (!container) return;
+
+    const update = () => {
+      const fits = container.scrollHeight <= container.clientHeight + 1;
+      setBoardsLockScroll(boardsData.length <= 8 && fits);
+    };
+
+    update();
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => update());
+      ro.observe(container);
+    }
+    window.addEventListener("resize", update);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [activeTab, boardsData.length, boardsCompactMode]);
 
   return (
     <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/70 shadow-sm">
-      <div className="flex flex-none gap-2 rounded-t-2xl bg-slate-900/60 px-3 py-0.5 backdrop-blur">
-        <TabButton label="Notation" active={activeTab === "notation"} onClick={() => handleTabChange("notation")} />
+      <div className="flex flex-none gap-2 overflow-x-auto rounded-t-2xl bg-slate-900/60 px-2 py-1.5 backdrop-blur lg:overflow-visible lg:px-3 lg:py-0.5">
+        <TabButton
+          label="Notation"
+          active={activeTab === "notation"}
+          onClick={() => handleTabChange("notation")}
+        />
         <TabButton
           label="Live commentary"
           active={activeTab === "live"}
@@ -403,14 +621,13 @@ const RightPaneTabs = ({
         />
       </div>
 
-      <div className="mt-1 flex-1 min-h-0 pr-2">
+      <div className="mt-1 flex-1 min-h-0 pr-0 sm:pr-2">
         {activeTab !== "boards" ? (
           <div className="px-3 pb-2">
             <StockfishPanel
               enabled={engineOn}
               evalResult={engineEval ?? null}
               lines={engineLines ?? []}
-              isEvaluating={Boolean(engineThinking)}
               multiPv={displayMultiPv}
               depthIndex={displayDepthIndex}
               depthSteps={resolvedDepthSteps}
@@ -433,8 +650,8 @@ const RightPaneTabs = ({
 
         {activeTab === "notation" ? (
           <div className="flex h-full min-h-0 flex-col px-3">
-            <div className="flex-1 min-h-0">
-              <div className="flex h-full min-h-0 flex-col rounded-xl border border-white/10 bg-slate-950/40 shadow-inner">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 pb-3">
+              <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-slate-950/40 shadow-inner">
                 <div className="grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)] gap-1.5 border-b border-white/5 bg-slate-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-200">
                   <span>#</span>
                   <span>White</span>
@@ -450,10 +667,12 @@ const RightPaneTabs = ({
                       hideHeader
                       renderContainer={false}
                       headerSelector={null}
+                      insertions={analysisInsertions}
                     />
                   </div>
                 </div>
               </div>
+
             </div>
           </div>
         ) : activeTab === "live" ? (
@@ -465,18 +684,69 @@ const RightPaneTabs = ({
             </div>
           </div>
         ) : (
-          <div className="flex h-full min-h-0 flex-col overflow-y-auto overflow-x-hidden">
-            <div className="flex flex-col px-3 pb-3">
-              <BoardsNavigationList
+          <div
+            ref={boardsPaneRef}
+            className={`flex h-full min-h-0 flex-col overflow-x-hidden ${
+              boardsLockScroll ? "overflow-hidden" : "overflow-y-auto"
+            }`}
+          >
+            <div className={`flex flex-col ${boardsCompactMode ? "px-2 pb-2" : "px-3 pb-3"}`}>
+              <BoardsNavigation
                 boards={boardsData}
                 currentBoardId={currentBoardId}
-                mode={mode}
-                activePane={activeTab}
+                paneQuery={activeTab}
+                compact={boardsCompactMode}
               />
             </div>
           </div>
         )}
       </div>
+
+      {analysisContextMenu && canShowAnalysisContextMenu ? (
+        <div
+          ref={analysisContextMenuRef}
+          role="menu"
+          className="fixed z-50 w-44 overflow-hidden rounded-xl border border-white/10 bg-slate-950/95 shadow-lg backdrop-blur"
+          style={{ left: analysisContextMenu.x, top: analysisContextMenu.y }}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="w-full px-3 py-2 text-left text-sm text-slate-100 transition hover:bg-white/5"
+            onClick={event => {
+              event.stopPropagation();
+              onPromoteAnalysisNode!(analysisContextMenu.anchorPly, analysisContextMenu.nodeId);
+              closeAnalysisContextMenu();
+            }}
+          >
+            Promote
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="w-full px-3 py-2 text-left text-sm text-slate-100 transition hover:bg-white/5"
+            onClick={event => {
+              event.stopPropagation();
+              onDeleteAnalysisLine!(analysisContextMenu.anchorPly, analysisContextMenu.nodeId);
+              closeAnalysisContextMenu();
+            }}
+          >
+            Delete line
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="w-full px-3 py-2 text-left text-sm text-slate-100 transition hover:bg-white/5"
+            onClick={event => {
+              event.stopPropagation();
+              onDeleteAnalysisFromHere!(analysisContextMenu.anchorPly, analysisContextMenu.nodeId);
+              closeAnalysisContextMenu();
+            }}
+          >
+            Delete from here
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 };

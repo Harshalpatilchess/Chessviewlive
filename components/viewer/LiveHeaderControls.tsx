@@ -6,6 +6,7 @@ import RoundBoardSelector from "@/components/viewer/RoundBoardSelector";
 import {
   DEFAULT_TOURNAMENT_SLUG,
   buildBoardIdentifier,
+  normalizeTournamentSlug,
   parseBoardIdentifier,
 } from "@/lib/boardId";
 
@@ -27,9 +28,9 @@ export default function LiveHeaderControls({
   pane,
 }: LiveHeaderControlsProps) {
   const router = useRouter();
-  const fallbackSlug = (tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG).toLowerCase();
+  const fallbackSlug = normalizeTournamentSlug((tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG).toLowerCase());
   const parsed = useMemo(() => parseBoardIdentifier(boardId, fallbackSlug), [boardId, fallbackSlug]);
-  const activeSlug = tournamentSlug ?? parsed.tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG;
+  const activeSlug = normalizeTournamentSlug(tournamentSlug ?? parsed.tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG);
 
   const initialRound = clampValue(parsed.round, 1, maxRounds);
   const initialBoard = clampValue(parsed.board, 1, boardsPerRound);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_TIME_TROUBLE_MS, formatChessClockMs, isTimeTrouble } from "@/lib/live/clockFormat";
 
 type Side = "white" | "black";
 
@@ -20,25 +21,13 @@ type UseMiniBoardClockResult = {
   isBlackInTimeTrouble: boolean;
 };
 
-const formatClock = (ms?: number | null): string | null => {
-  if (!Number.isFinite(ms ?? NaN) || (ms ?? 0) < 0) return "00:00";
-  const totalSeconds = Math.max(0, Math.floor((ms as number) / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-  }
-  return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
-};
-
 export default function useMiniBoardClock({
   status,
   whiteTimeMs,
   blackTimeMs,
   sideToMove,
   tickMs = 1000,
-  timeTroubleMs = 2 * 60 * 1000,
+  timeTroubleMs = DEFAULT_TIME_TROUBLE_MS,
 }: UseMiniBoardClockParams): UseMiniBoardClockResult {
   const [whiteMs, setWhiteMs] = useState<number | null>(
     Number.isFinite(whiteTimeMs ?? NaN) ? (whiteTimeMs as number) : null
@@ -80,11 +69,11 @@ export default function useMiniBoardClock({
     };
   }, [status, tickMs]);
 
-  const whiteTimeLabel = useMemo(() => formatClock(whiteMs), [whiteMs]);
-  const blackTimeLabel = useMemo(() => formatClock(blackMs), [blackMs]);
+  const whiteTimeLabel = useMemo(() => formatChessClockMs(whiteMs), [whiteMs]);
+  const blackTimeLabel = useMemo(() => formatChessClockMs(blackMs), [blackMs]);
   const isLive = status === "live";
-  const isWhiteInTimeTrouble = isLive && Number.isFinite(whiteMs ?? NaN) ? (whiteMs as number) <= timeTroubleMs : false;
-  const isBlackInTimeTrouble = isLive && Number.isFinite(blackMs ?? NaN) ? (blackMs as number) <= timeTroubleMs : false;
+  const isWhiteInTimeTrouble = isTimeTrouble(whiteMs, { enabled: isLive, timeTroubleMs });
+  const isBlackInTimeTrouble = isTimeTrouble(blackMs, { enabled: isLive, timeTroubleMs });
 
   return { whiteTimeLabel, blackTimeLabel, isWhiteInTimeTrouble, isBlackInTimeTrouble };
 }

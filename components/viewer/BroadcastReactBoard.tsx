@@ -10,6 +10,7 @@ type BroadcastReactBoardProps = {
   draggable?: boolean;
   boardId?: string;
   showNotation?: boolean;
+  onPieceDrop?: (sourceSquare: string, targetSquare: string, piece: string) => boolean;
 };
 
 const boardStyle = {
@@ -23,8 +24,11 @@ export default function BroadcastReactBoard({
   draggable = false,
   boardId = "cv-broadcast-board",
   showNotation = true,
+  onPieceDrop,
 }: BroadcastReactBoardProps) {
-  console.log("BroadcastReactBoard render", { boardId, position, boardOrientation });
+  if (typeof process !== "undefined" && process.env.NODE_ENV !== "production") {
+    console.log("BroadcastReactBoard render", { boardId, position, boardOrientation });
+  }
 
   return (
     <div className="mx-auto w-full max-w-[520px] overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-950 to-black shadow-lg">
@@ -33,6 +37,7 @@ export default function BroadcastReactBoard({
         position={position}
         boardOrientation={boardOrientation}
         arePiecesDraggable={draggable}
+        onPieceDrop={onPieceDrop}
         animationDuration={250}
         customBoardStyle={boardStyle}
         customDarkSquareStyle={{ backgroundColor: "#b58863" }}

@@ -5,6 +5,8 @@ export type CloudEngineRequest = {
   requestId: string;
   searchMode?: "time" | "depth";
   targetDepth?: number;
+  refine?: boolean;
+  refineTargetDepth?: number;
   threads?: number;
   hashMb?: number;
   skillLevel?: number;
