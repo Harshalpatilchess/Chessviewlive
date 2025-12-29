@@ -41,11 +41,15 @@ function formatLineEval(cp?: number, mate?: number, variant: "compact" | "detail
   return "";
 }
 
-const formatPvPreview = (pv?: string, maxChars: number = 120): string => {
+const PV_SAFETY_LIMIT = 60;
+
+const formatPvForDisplay = (pv?: string, moveLimit: number = PV_SAFETY_LIMIT): string => {
   if (!pv) return "";
-  const trimmed = pv.trim();
-  if (trimmed.length <= maxChars) return trimmed;
-  return `${trimmed.slice(0, maxChars - 3)}...`;
+  const tokens = pv.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return "";
+  const limited = tokens.length > moveLimit ? tokens.slice(0, moveLimit) : tokens;
+  const joined = limited.join(" ");
+  return tokens.length > moveLimit ? `${joined} …` : joined;
 };
 
 const clampDepthIndex = (value: number, steps: number[]): number => {
@@ -148,6 +152,8 @@ type StockfishPanelProps = {
   debugBackendSwitcherEnabled?: boolean;
   onEngineBackendChange?: (backend: EngineBackend) => void;
   activeTab?: string | null;
+  variant?: "full" | "mini";
+  onNavigateToFull?: () => void;
 };
 
 const ControlRow = ({
@@ -201,6 +207,8 @@ const StockfishPanel = ({
   debugBackendSwitcherEnabled = false,
   onEngineBackendChange,
   activeTab = "notation",
+  variant = "full",
+  onNavigateToFull,
 }: StockfishPanelProps) => {
   const [showSettings, setShowSettings] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
@@ -294,7 +302,8 @@ const StockfishPanel = ({
     [normalizedLines, safeMultiPv]
   );
   const strengthLabel = targetDepthValue ? getStrengthLabel(targetDepthValue, resolvedProfile.id as EngineProfileId) : "—";
-  const showMainContent = enabled && activeTab === "notation" && !showSettings;
+  const showMainContent =
+    enabled && (activeTab === "notation" || activeTab === "engine") && !showSettings;
   const currentDepth = useMemo(
     () => getCurrentDepth(linesToRender.length ? linesToRender : normalizedLines),
     [linesToRender, normalizedLines]
@@ -314,6 +323,12 @@ const StockfishPanel = ({
         : engineBackend === "wasm-nnue"
           ? "WASM NNUE"
           : "WASM";
+  const isMiniPanel = variant === "mini";
+  const handleMiniNavigate = () => {
+    if (typeof onNavigateToFull === "function") {
+      onNavigateToFull();
+    }
+  };
   const displayedDepth = currentDepth ?? targetDepthValue;
   const handleToggleClick = () => {
     if (typeof onToggle === "function") {
@@ -336,6 +351,88 @@ const StockfishPanel = ({
     const nextIndex = clampDepthIndex(parsed, resolvedDepthSteps);
     onDepthChange?.(nextIndex);
   };
+
+  if (isMiniPanel) {
+    const pvLabel = primaryLine ? formatLineEval(primaryLine.cp, primaryLine.mate) : headlineEval;
+    const pvMoves = typeof primaryLine?.pv === "string" ? primaryLine.pv.trim().split(/\s+/).filter(Boolean) : [];
+    const formattedPv = formatPvSan(fen, pvMoves).pvSan;
+    const pvText = formatPvForDisplay(formattedPv || primaryLine?.pv || "");
+    return (
+      <div
+        ref={panelRef}
+        className="mt-2 rounded-2xl border border-slate-800/70 bg-slate-950/70 p-2 text-xs text-slate-100 shadow-inner"
+      >
+        <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/80 bg-slate-900/70 px-2 py-1.5">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={enabled}
+              aria-label="Toggle engine"
+              onClick={handleToggleClick}
+              className={`flex h-7 w-12 items-center rounded-full px-1 transition ${
+                enabled ? "bg-emerald-500/40" : "bg-slate-700"
+              } ${typeof onToggle === "function" ? "cursor-pointer hover:bg-emerald-500/60" : "cursor-not-allowed opacity-80"}`}
+            >
+              <span
+                className={`h-5 w-5 rounded-full bg-white shadow transition ${enabled ? "translate-x-5" : "translate-x-0"}`}
+              />
+            </button>
+            <div className="flex min-w-0 flex-col leading-tight">
+              <div className="text-[11px] font-semibold text-slate-50">{engineBackendDisplay.short}</div>
+              <div className="text-[9px] text-slate-400">{engineSecondaryLabel}</div>
+            </div>
+          </div>
+          <div className="flex min-w-0 flex-col items-end leading-tight">
+            {enabled && headlineEval ? (
+              <div className="text-[14px] font-semibold text-emerald-100 tabular-nums">{headlineEval}</div>
+            ) : (
+              <div className="text-[10px] font-semibold text-slate-400">Engine off</div>
+            )}
+            {enabled ? (
+              <div className="text-[9px] font-semibold uppercase tracking-wide text-emerald-200">
+                Depth {displayedDepth ?? "—"}
+              </div>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleMiniNavigate}
+              className="inline-flex h-7 items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2 text-[9px] font-semibold uppercase tracking-wide text-emerald-200"
+              aria-label="Open engine settings"
+            >
+              <span className="leading-none">{resolvedProfile.label}</span>
+              <span aria-hidden="true" className="leading-none text-emerald-200/90">
+                ▾
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handleMiniNavigate}
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-transparent bg-slate-800 text-slate-200 transition hover:bg-slate-700"
+              aria-label="Open engine settings"
+            >
+              <span className="text-[11px]">⚙</span>
+            </button>
+          </div>
+        </div>
+
+        {enabled ? (
+          <div className="mt-2 rounded-lg border border-slate-800/80 bg-slate-900/60 px-2 py-1.5">
+            <div className="flex items-baseline gap-2">
+              <div className="shrink-0 text-[10px] font-semibold leading-none text-emerald-100 tabular-nums">
+                {pvLabel || "—"}
+              </div>
+              <div className="min-w-0 flex-1 truncate font-mono text-[10px] leading-none tracking-tight text-slate-100">
+                {pvText || "No moves yet."}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -367,7 +464,7 @@ const StockfishPanel = ({
 	          {enabled ? (
 	            <>
 	              {headlineEval ? (
-	                <div className="text-2xl font-black leading-tight text-emerald-100 drop-shadow">{headlineEval}</div>
+	                <div className="text-[26px] font-black leading-tight text-emerald-100 drop-shadow">{headlineEval}</div>
 	              ) : null}
 	              <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-200">
 	                Depth {displayedDepth ?? "—"}
@@ -428,21 +525,24 @@ const StockfishPanel = ({
                     {linesToRender.map((line, idx) => {
                       const label = formatLineEval(line.cp, line.mate);
                       const pvMoves = typeof line.pv === "string" ? line.pv.trim().split(/\s+/).filter(Boolean) : [];
-                      const pvText = formatPvPreview(formatPvSan(fen, pvMoves).pvSan);
+                      const formattedPv = formatPvSan(fen, pvMoves).pvSan;
+                      const pvText = formatPvForDisplay(formattedPv || line.pv || "");
                       const emphasized = idx === 0;
                       return (
                         <div
                           key={line.multipv}
-                          className={`flex items-start gap-2 rounded-lg border px-3 py-2 ${
+                          className={`flex items-baseline gap-1.5 rounded-lg border px-3 py-2 ${
                             emphasized
                               ? "border-emerald-400/60 bg-emerald-500/5"
                               : "border-slate-800/70 bg-slate-950/40"
                           }`}
                         >
-	                          <div className="text-sm font-semibold text-emerald-100 tabular-nums">{label}</div>
-	                          <div className="min-w-0 flex-1 text-[12px] leading-snug text-slate-100">
-	                            {pvText}
-	                          </div>
+                          <div className="shrink-0 text-sm font-semibold leading-none text-emerald-100 tabular-nums">
+                            {label}
+                          </div>
+                          <div className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none tracking-tight text-slate-100">
+                            {pvText || "No moves yet."}
+                          </div>
                         </div>
                       );
                     })}
@@ -575,7 +675,8 @@ export const StockfishLinesList = ({ lines, fen, emptyLabel = "" }: StockfishLin
       {normalizedLines.map(line => {
         const label = formatLineEval(line.cp, line.mate);
         const pvMoves = typeof line.pv === "string" ? line.pv.trim().split(/\s+/).filter(Boolean) : [];
-        const pvText = formatPvPreview(formatPvSan(fen, pvMoves).pvSan);
+        const formattedPv = formatPvSan(fen, pvMoves).pvSan;
+        const pvText = formatPvPreview(formattedPv || line.pv || "");
         return (
           <div
             key={line.multipv}
@@ -583,7 +684,7 @@ export const StockfishLinesList = ({ lines, fen, emptyLabel = "" }: StockfishLin
           >
             <div className="text-sm font-semibold text-emerald-100 tabular-nums">{label}</div>
             <div className="flex-1 text-[11px] leading-snug text-slate-200">
-              {pvText}
+              {pvText || "No moves yet."}
             </div>
           </div>
         );

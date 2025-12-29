@@ -3,11 +3,18 @@ type EvalBarProps = {
   scoreLabel?: string;
   advantage?: "white" | "black" | "equal";
   orientation?: "white" | "black";
+  size?: "default" | "compact" | "mini";
 };
 
 const clamp = (val: number) => Math.min(100, Math.max(0, val));
 
-const EvalBar = ({ value, scoreLabel, advantage, orientation = "white" }: EvalBarProps) => {
+const EvalBar = ({
+  value,
+  scoreLabel,
+  advantage,
+  orientation = "white",
+  size = "default",
+}: EvalBarProps) => {
   const percent = clamp(value);
   const rawLabel = scoreLabel ?? "0.0";
   const effectiveAdvantage =
@@ -23,14 +30,20 @@ const EvalBar = ({ value, scoreLabel, advantage, orientation = "white" }: EvalBa
       : effectiveAdvantage === "white"
         ? whitePosition
         : blackPosition;
-  const labelClass =
-    "pointer-events-none absolute left-1/2 -translate-x-1/2 transform select-none text-[10px] font-semibold leading-tight text-slate-50 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] bg-black/25 px-1 rounded-sm backdrop-blur-[1px]";
+  const widthClass =
+    size === "mini"
+      ? "w-2.5 md:w-3"
+      : size === "compact"
+        ? "w-2.5 md:w-3"
+        : "w-3 md:w-3.5";
+  const labelSizeClass = size === "mini" ? "text-[9px]" : "text-[10px]";
+  const labelClass = `pointer-events-none absolute left-1/2 -translate-x-1/2 transform select-none ${labelSizeClass} font-semibold leading-tight text-slate-50 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] bg-black/25 px-1 rounded-sm backdrop-blur-[1px]`;
   const normalizedLabel =
     effectiveAdvantage === "black" ? rawLabel.replace(/^-/, "") : rawLabel;
   const displayLabel = effectiveAdvantage === "equal" ? "0.0" : normalizedLabel;
 
   return (
-    <div className="relative flex h-full w-3 items-stretch overflow-hidden rounded-full bg-slate-800/70 md:w-3.5">
+    <div className={`relative flex h-full ${widthClass} items-stretch overflow-hidden rounded-full bg-slate-800/70`}>
       <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-amber-300/70" />
       <div
         className="mt-auto h-full w-full rounded-full bg-emerald-400"

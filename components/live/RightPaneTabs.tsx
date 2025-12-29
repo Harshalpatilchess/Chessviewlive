@@ -19,6 +19,7 @@ import type { StockfishEval, StockfishLine } from "@/lib/engine/useStockfishEval
 import { DEBUG_ENGINE_SWITCHER, type EngineBackend, type EngineProfileConfig, type EngineProfileId } from "@/lib/engine/config";
 import { BoardsNavigation } from "@/components/boards/BoardsNavigation";
 import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
+import { normalizeBoardIdentifier } from "@/lib/boardId";
 
 type AnalysisBranch = {
   anchorPly: number;
@@ -74,27 +75,35 @@ type RightPaneTabsProps = {
   onDeleteAnalysisFromHere?: (anchorPly: number, nodeId: string) => void;
   boardNavigation?: BoardNavigationEntry[] | null;
   currentBoardId?: string;
+  onBoardSelect?: (board: BoardNavigationEntry) => boolean | void;
+  density?: "default" | "compact";
+  variant?: "full" | "mini";
+  mode?: "live" | "replay";
 };
 
-type TabKey = "notation" | "live" | "boards";
+type FullTabKey = "notation" | "live" | "boards";
+type MiniTabKey = "notation" | "engine" | "boards";
+type TabKey = FullTabKey | MiniTabKey;
 
 const TabButton = ({
   label,
   active,
   onClick,
   indicator,
+  compact = false,
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
   indicator?: boolean;
+  compact?: boolean;
 }) => (
   <button
     type="button"
     onClick={onClick}
-    className={`relative flex-none shrink-0 whitespace-nowrap rounded-full px-4 py-2.5 text-sm font-semibold transition lg:flex-1 ${
+    className={`relative flex-none shrink-0 whitespace-nowrap rounded-full font-semibold transition lg:flex-1 ${
       active ? "bg-white/15 text-white" : "text-slate-400 hover:text-white"
-    }`}
+    } ${compact ? "px-3 py-2 text-[11px]" : "px-4 py-2.5 text-sm"}`}
   >
     <span className="inline-flex items-center justify-center gap-2">
       {label}
@@ -268,13 +277,37 @@ const RightPaneTabs = ({
   onMoveSelect,
   boardNavigation,
   currentBoardId,
+  onBoardSelect,
+  density = "default",
+  variant = "full",
+  mode,
 }: RightPaneTabsProps) => {
+  const isMini = variant === "mini";
+  const isCompact = density === "compact";
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
+  const isHomepageMini = isMini && pathname === "/";
+  const miniTargetPath = useMemo(() => {
+    if (!isHomepageMini || !currentBoardId) return null;
+    const { normalizedBoardId, parsed } = normalizeBoardIdentifier(currentBoardId);
+    const resolvedMode = mode ?? "live";
+    const returnTo = encodeURIComponent("/");
+    return `/t/${encodeURIComponent(parsed.tournamentSlug)}/${resolvedMode}/${encodeURIComponent(
+      normalizedBoardId
+    )}?upsell=1&returnTo=${returnTo}`;
+  }, [currentBoardId, isHomepageMini, mode]);
+  const handleMiniNavigate = useCallback(() => {
+    if (!miniTargetPath) return;
+    router.push(miniTargetPath);
+  }, [miniTargetPath, router]);
   const paneParam = searchParams?.get("pane");
-  const resolvedPane: TabKey =
-    paneParam === "boards" || paneParam === "live" || paneParam === "notation" ? paneParam : "notation";
+  const allowedTabs: TabKey[] = isMini
+    ? ["notation", "engine", "boards"]
+    : ["notation", "live", "boards"];
+  const resolvedPane: TabKey = allowedTabs.includes(paneParam as TabKey)
+    ? (paneParam as TabKey)
+    : "notation";
   const [activeTab, setActiveTab] = useState<TabKey>(resolvedPane);
   const boardsPaneRef = useRef<HTMLDivElement | null>(null);
   const [boardsCompactMode, setBoardsCompactMode] = useState(false);
@@ -601,64 +634,92 @@ const RightPaneTabs = ({
     };
   }, [activeTab, boardsData.length, boardsCompactMode]);
 
+  const tabConfig: Array<{ key: TabKey; label: string }> = isMini
+    ? [
+        { key: "notation", label: "Notation" },
+        { key: "engine", label: "Engine" },
+        { key: "boards", label: "Boards" },
+      ]
+    : [
+        { key: "notation", label: "Notation" },
+        { key: "live", label: "Live commentary" },
+        { key: "boards", label: "Boards navigation" },
+      ];
+  const showEnginePanel = isMini ? activeTab === "engine" : activeTab !== "boards";
+  const enginePanel = (
+    <div className={isCompact ? "px-2 pb-2" : "px-3 pb-2"}>
+      <StockfishPanel
+        enabled={engineOn}
+        evalResult={engineEval ?? null}
+        lines={engineLines ?? []}
+        multiPv={displayMultiPv}
+        depthIndex={displayDepthIndex}
+        depthSteps={resolvedDepthSteps}
+        targetDepth={displayTargetDepth}
+        onMultiPvChange={setMultiPv}
+        onDepthChange={setDepthIndex}
+        profileId={profileId}
+        profileConfig={engineProfile}
+        onProfileChange={handleProfileChange}
+        fen={fen}
+        engineName={engineName}
+        engineBackend={engineBackend}
+        onEngineBackendChange={debugEngineSwitcherEnabled ? setEngineBackend : undefined}
+        debugBackendSwitcherEnabled={debugEngineSwitcherEnabled}
+        onToggle={value => setEngineOn(value)}
+        activeTab={activeTab}
+        variant={isHomepageMini ? "mini" : "full"}
+        onNavigateToFull={isHomepageMini ? handleMiniNavigate : undefined}
+      />
+    </div>
+  );
+
   return (
-    <section className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900/70 shadow-sm">
-      <div className="flex flex-none gap-2 overflow-x-auto rounded-t-2xl bg-slate-900/60 px-2 py-1.5 backdrop-blur lg:overflow-visible lg:px-3 lg:py-0.5">
-        <TabButton
-          label="Notation"
-          active={activeTab === "notation"}
-          onClick={() => handleTabChange("notation")}
-        />
-        <TabButton
-          label="Live commentary"
-          active={activeTab === "live"}
-          onClick={() => handleTabChange("live")}
-        />
-        <TabButton
-          label="Boards navigation"
-          active={activeTab === "boards"}
-          onClick={() => handleTabChange("boards")}
-        />
+    <section
+      className={`flex h-full min-h-0 flex-1 flex-col overflow-hidden border border-white/10 bg-slate-900/70 shadow-sm ${
+        isCompact ? "rounded-xl" : "rounded-2xl"
+      }`}
+    >
+      <div
+        className={`flex flex-none gap-2 overflow-x-auto bg-slate-900/60 backdrop-blur lg:overflow-visible ${
+          isCompact ? "rounded-t-xl px-2 py-1" : "rounded-t-2xl px-2 py-1.5 lg:px-3 lg:py-0.5"
+        }`}
+      >
+        {tabConfig.map(tab => (
+          <TabButton
+            key={tab.key}
+            label={tab.label}
+            active={activeTab === tab.key}
+            onClick={() => handleTabChange(tab.key)}
+            compact={isCompact}
+          />
+        ))}
       </div>
 
-      <div className="mt-1 flex-1 min-h-0 pr-0 sm:pr-2">
-        {activeTab !== "boards" ? (
-          <div className="px-3 pb-2">
-            <StockfishPanel
-              enabled={engineOn}
-              evalResult={engineEval ?? null}
-              lines={engineLines ?? []}
-              multiPv={displayMultiPv}
-              depthIndex={displayDepthIndex}
-              depthSteps={resolvedDepthSteps}
-              targetDepth={displayTargetDepth}
-              onMultiPvChange={setMultiPv}
-              onDepthChange={setDepthIndex}
-              profileId={profileId}
-              profileConfig={engineProfile}
-              onProfileChange={handleProfileChange}
-              fen={fen}
-              engineName={engineName}
-              engineBackend={engineBackend}
-              onEngineBackendChange={debugEngineSwitcherEnabled ? setEngineBackend : undefined}
-              debugBackendSwitcherEnabled={debugEngineSwitcherEnabled}
-              onToggle={value => setEngineOn(value)}
-              activeTab={activeTab}
-            />
-          </div>
+      <div
+        className={`relative mt-1 flex-1 min-h-0 pr-0 ${isCompact ? "" : "sm:pr-2"} ${
+          isMini ? "flex flex-col" : ""
+        }`}
+      >
+        {showEnginePanel ? (
+          <div className={isMini ? "flex min-h-0 flex-1 flex-col" : ""}>{enginePanel}</div>
         ) : null}
 
         {activeTab === "notation" ? (
-          <div className="flex h-full min-h-0 flex-col px-3">
-            <div className="flex min-h-0 flex-1 flex-col gap-3 pb-3">
+          <div className={isCompact ? "flex h-full min-h-0 flex-col px-2" : "flex h-full min-h-0 flex-col px-3"}>
+            <div className={isCompact ? "flex min-h-0 flex-1 flex-col gap-2 pb-2" : "flex min-h-0 flex-1 flex-col gap-3 pb-3"}>
               <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-slate-950/40 shadow-inner">
-                <div className="grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)] gap-1.5 border-b border-white/5 bg-slate-900 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-200">
+                <div
+                  className={`grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)] gap-1.5 border-b border-white/5 bg-slate-900 font-medium uppercase tracking-wide text-slate-200 ${
+                    isCompact ? "px-2.5 py-1 text-[10px]" : "px-3 py-1.5 text-[11px]"
+                  }`}
+                >
                   <span>#</span>
                   <span>White</span>
                   <span>Black</span>
                 </div>
-                <div ref={notationScrollRef} className="flex-1 overflow-y-auto">
-                  <div className="flex flex-col px-3 pb-4">
+                <div ref={notationScrollRef} className="themed-scroll flex-1 overflow-y-auto">
+                  <div className={isCompact ? "flex flex-col px-2.5 pb-3" : "flex flex-col px-3 pb-4"}>
                     <NotationList
                       plies={resolvedPlies}
                       currentMoveIndex={clampedCurrentIndex}
@@ -675,31 +736,48 @@ const RightPaneTabs = ({
 
             </div>
           </div>
-        ) : activeTab === "live" ? (
+        ) : null}
+
+        {!isMini && activeTab === "live" ? (
           <div className="flex h-full min-h-0 flex-col overflow-y-auto">
-            <div className="flex flex-col px-3 pb-4">
-              <div className="mt-3 rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-sm text-slate-200">
+            <div className={isCompact ? "flex flex-col px-2 pb-3" : "flex flex-col px-3 pb-4"}>
+              <div
+                className={`mt-3 rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-slate-200 ${
+                  isCompact ? "text-xs" : "text-sm"
+                }`}
+              >
                 Live commentary connects here. Expect GM insights, critical moments, and tactics once the broadcast begins.
               </div>
             </div>
           </div>
-        ) : (
+        ) : null}
+
+        {activeTab === "boards" ? (
           <div
             ref={boardsPaneRef}
             className={`flex h-full min-h-0 flex-col overflow-x-hidden ${
               boardsLockScroll ? "overflow-hidden" : "overflow-y-auto"
             }`}
           >
-            <div className={`flex flex-col ${boardsCompactMode ? "px-2 pb-2" : "px-3 pb-3"}`}>
+            <div className={`flex flex-col ${boardsCompactMode || isCompact ? "px-2 pb-2" : "px-3 pb-3"}`}>
               <BoardsNavigation
                 boards={boardsData}
                 currentBoardId={currentBoardId}
                 paneQuery={activeTab}
-                compact={boardsCompactMode}
+                compact={boardsCompactMode || isCompact}
+                onBoardClick={onBoardSelect}
               />
             </div>
           </div>
-        )}
+        ) : null}
+        {isHomepageMini && activeTab !== "notation" ? (
+          <button
+            type="button"
+            onClick={handleMiniNavigate}
+            className="absolute inset-0 z-20 cursor-pointer bg-transparent"
+            aria-label="Open full viewer"
+          />
+        ) : null}
       </div>
 
       {analysisContextMenu && canShowAnalysisContextMenu ? (

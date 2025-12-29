@@ -56,9 +56,13 @@ const SidePane = ({ match, clocks, commentary }: SidePaneProps) => {
                     {player.title ? `${player.title} ${player.name}` : player.name}
                   </p>
                   {typeof player.rating === "number" ? (
-                    <p className="text-xs text-gray-500 dark:text-gray-400">Rating {player.rating}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Rating <span className="rating-text">{player.rating}</span>
+                    </p>
                   ) : null}
-                  <p className="text-xs text-gray-500 dark:text-gray-400">{player.country}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    <span className="rating-text">{player.country}</span>
+                  </p>
                 </div>
                 <div className="text-right">
                   <p className="font-mono text-2xl font-semibold tabular-nums text-gray-900 dark:text-white">

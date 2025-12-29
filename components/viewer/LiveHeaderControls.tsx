@@ -15,7 +15,10 @@ type LiveHeaderControlsProps = {
   tournamentSlug?: string;
   maxRounds?: number;
   boardsPerRound?: number;
-  pane?: "notation" | "live" | "boards";
+  pane?: "notation" | "live" | "boards" | "engine";
+  disableBoardSwitch?: boolean;
+  onBoardSwitchBlocked?: () => void;
+  density?: "default" | "compact";
 };
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -26,6 +29,9 @@ export default function LiveHeaderControls({
   maxRounds = 9,
   boardsPerRound = 20,
   pane,
+  disableBoardSwitch = false,
+  onBoardSwitchBlocked,
+  density = "default",
 }: LiveHeaderControlsProps) {
   const router = useRouter();
   const fallbackSlug = normalizeTournamentSlug((tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG).toLowerCase());
@@ -56,6 +62,9 @@ export default function LiveHeaderControls({
       boardsPerRound={boardsPerRound}
       onSelectionChange={handleSelectionChange}
       pane={pane}
+      selectionLocked={disableBoardSwitch}
+      onSelectionBlocked={onBoardSwitchBlocked}
+      density={density}
     />
   );
 }

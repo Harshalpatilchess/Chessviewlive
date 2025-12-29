@@ -6,6 +6,8 @@ export type ParsedBoardIdentifier = {
   board: number;
 };
 
+const BOARD_ID_REGEX = /^([a-z0-9-]+)-board(\d+)\.(\d+)$/i;
+
 const TOURNAMENT_SLUG_ALIASES: Record<string, string> = {
   worldcup: DEFAULT_TOURNAMENT_SLUG,
 };
@@ -29,8 +31,7 @@ export const parseBoardIdentifier = (
   value: string,
   fallbackSlug: string = DEFAULT_TOURNAMENT_SLUG
 ): ParsedBoardIdentifier => {
-  const regex = /^([a-z0-9-]+)-board(\d+)\.(\d+)$/i;
-  const match = value.match(regex);
+  const match = value.match(BOARD_ID_REGEX);
 
   if (!match) {
     return {
@@ -50,6 +51,11 @@ export const parseBoardIdentifier = (
     round,
     board,
   };
+};
+
+export const isBoardIdentifier = (value?: string | null): boolean => {
+  if (!value) return false;
+  return BOARD_ID_REGEX.test(value.trim());
 };
 
 export const buildBoardIdentifier = (tournamentSlug: string, round: number, board: number) => {

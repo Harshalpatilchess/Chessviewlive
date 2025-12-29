@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { MouseEvent } from "react";
 import Flag from "@/components/live/Flag";
 import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
 import useMiniBoardClock from "@/lib/live/useMiniBoardClock";
@@ -14,6 +15,7 @@ type BoardsNavigationCardProps = {
   paneQuery?: string;
   compact?: boolean;
   hrefBuilder?: (board: BoardNavigationEntry, options: { paneQuery: string; isFinished: boolean }) => string;
+  onBoardClick?: (board: BoardNavigationEntry) => boolean | void;
 };
 
 const pillBase = "inline-flex items-center justify-center whitespace-nowrap rounded-md border font-semibold leading-tight";
@@ -74,7 +76,7 @@ const PlayerLine = ({ player, compact }: { player: BoardNavigationPlayer; compac
     </div>
     {player.rating ? (
       <span
-        className={`ml-auto whitespace-nowrap font-medium text-slate-200 tabular-nums ${compact ? "text-[11px]" : "text-[12px]"}`}
+        className={`rating-text ml-auto whitespace-nowrap tabular-nums ${compact ? "text-[11px]" : "text-[12px]"}`}
         aria-label="Rating"
       >
         {player.rating}
@@ -90,6 +92,7 @@ export const BoardsNavigationCard = ({
   paneQuery,
   compact = false,
   hrefBuilder,
+  onBoardClick,
 }: BoardsNavigationCardProps) => {
   const resolvedActive = typeof isActive === "boolean" ? isActive : currentBoardId === board.boardId;
   const resolvedPaneQuery = paneQuery ?? "notation";
@@ -141,6 +144,14 @@ export const BoardsNavigationCard = ({
       href={href}
       scroll={false}
       aria-pressed={resolvedActive}
+      onClick={(event: MouseEvent<HTMLAnchorElement>) => {
+        if (!onBoardClick) return;
+        const result = onBoardClick(board);
+        if (result === false) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }}
       className={`${baseClass} ${activeClass} ${hoverClass} group overflow-hidden`}
     >
       <div

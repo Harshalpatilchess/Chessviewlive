@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CURRENT_ENGINE_CONFIG,
-  ANALYSIS_QUALITY_PASSES_MS,
   DEFAULT_ENGINE_PROFILE_ID,
+  ENGINE_DISPLAY_NAME,
   type CloudEngineLine,
   type CloudEngineRequest,
   type CloudEngineResponse,
@@ -28,43 +28,20 @@ type UseCloudEngineEvaluationOptions = {
   depthIndex?: number;
   profileId?: EngineProfileId;
   targetDepth?: number;
+  debounceMs?: number;
 };
 
 const ENGINE_CONFIG = CURRENT_ENGINE_CONFIG;
 const DEFAULT_PROFILE_CONFIG = getEngineProfileConfig(DEFAULT_ENGINE_PROFILE_ID);
-const CLOUD_ENGINE_NAME =
-  (ENGINE_CONFIG.backends?.cloud as { engineName?: string } | undefined)?.engineName ?? "Stockfish (cloud)";
+const CLOUD_ENGINE_NAME = ENGINE_DISPLAY_NAME;
 const ENGINE_BACKEND: EngineBackend = "cloud";
-const REFINE_TTL_MS = 20_000;
+const DEBUG_ENGINE = process.env.NODE_ENV === "development";
 
-type CachedEvalPayload = {
-  eval: StockfishEval;
-  bestLines: StockfishLine[];
-  engineName?: string;
-  depth?: number;
-  at: number;
-  movetimeMs?: number;
-};
-
-type CachedFenEval = {
-  byMovetimeMs?: Map<number, CachedEvalPayload>;
-};
-
-const fenEvalCache = new Map<string, CachedFenEval>();
-
-const getEvalComparable = (value: StockfishEval): { kind: "cp"; value: number } | { kind: "mate"; value: number } | null => {
-  if (!value) return null;
-  if (typeof value.mate === "number" && Number.isFinite(value.mate)) return { kind: "mate", value: value.mate };
-  if (typeof value.cp === "number" && Number.isFinite(value.cp)) return { kind: "cp", value: value.cp };
-  return null;
-};
-
-const getPvPrefix = (line?: StockfishLine | null, plies: number = 4): string | null => {
-  const pv = typeof line?.pv === "string" ? line.pv.trim() : "";
-  if (!pv) return null;
-  const tokens = pv.split(/\s+/).filter(Boolean);
-  if (!tokens.length) return null;
-  return tokens.slice(0, Math.max(1, Math.floor(plies))).join(" ");
+const getFenHash = (fen: string | null) => {
+  if (typeof fen !== "string") return "--";
+  const trimmed = fen.trim();
+  if (!trimmed) return "--";
+  return trimmed.slice(0, 12);
 };
 
 const clampLineCount = (value?: number | null) => {
@@ -89,11 +66,19 @@ const resolveDepthSteps = (profile: EngineProfileConfig): number[] => {
 };
 
 const mapCloudLineToStockfishLine = (line: CloudEngineLine): StockfishLine => {
-  const multipv = Number.isFinite(line?.multipv) ? Number(line.multipv) : 1;
-  const cp = Number.isFinite(line?.scoreCp ?? NaN) ? Number(line.scoreCp) : undefined;
-  const mate = Number.isFinite(line?.scoreMate ?? NaN) ? Number(line.scoreMate) : undefined;
-  const depth = Number.isFinite(line?.depth ?? NaN) ? Number(line.depth) : undefined;
-  const pv = Array.isArray(line?.pvMoves) ? line.pvMoves.join(" ") : "";
+  const multipvRaw = Number(line?.multipv);
+  const multipv = Number.isFinite(multipvRaw) ? multipvRaw : 1;
+  const cpRaw = Number((line as { scoreCp?: number | string }).scoreCp);
+  const cp = Number.isFinite(cpRaw) ? cpRaw : undefined;
+  const mateRaw = Number((line as { scoreMate?: number | string }).scoreMate);
+  const mate = Number.isFinite(mateRaw) ? mateRaw : undefined;
+  const depthRaw = Number(line?.depth);
+  const depth = Number.isFinite(depthRaw) ? depthRaw : undefined;
+  const pv = Array.isArray(line?.pvMoves)
+    ? line.pvMoves.join(" ")
+    : typeof (line as { pv?: string }).pv === "string"
+      ? (line as { pv?: string }).pv.trim()
+      : "";
 
   return { multipv, cp, mate, depth, pv };
 };
@@ -101,8 +86,10 @@ const mapCloudLineToStockfishLine = (line: CloudEngineLine): StockfishLine => {
 const deriveEvalFromCloudLines = (lines: CloudEngineLine[]): StockfishEval => {
   if (!Array.isArray(lines) || !lines.length) return null;
   const [primary] = lines;
-  if (typeof primary?.scoreMate === "number") return { mate: primary.scoreMate };
-  if (typeof primary?.scoreCp === "number") return { cp: primary.scoreCp };
+  const mateRaw = Number((primary as { scoreMate?: number | string }).scoreMate);
+  if (Number.isFinite(mateRaw)) return { mate: mateRaw };
+  const cpRaw = Number((primary as { scoreCp?: number | string }).scoreCp);
+  if (Number.isFinite(cpRaw)) return { cp: cpRaw };
   return null;
 };
 
@@ -124,7 +111,7 @@ export default function useCloudEngineEvaluation(
     clampDepthIndex(options.depthIndex ?? initialProfileConfig.defaultDepthIndex, initialDepthSteps)
   );
   const [multiPv, setMultiPvState] = useState<number>(() =>
-    clampLineCount(options.multiPv ?? getSavedEngineMultiPv() ?? 1)
+    clampLineCount(options.multiPv ?? getSavedEngineMultiPv() ?? initialProfileConfig.multiPv ?? 1)
   );
   const [evalResult, setEvalResult] = useState<StockfishEval>(null);
   const [bestLines, setBestLines] = useState<StockfishLine[]>([]);
@@ -132,13 +119,12 @@ export default function useCloudEngineEvaluation(
   const [lastError, setLastError] = useState<string | null>(null);
   const [engineName, setEngineName] = useState<string | undefined>(CLOUD_ENGINE_NAME);
   const [evaluatedFen, setEvaluatedFen] = useState<string | null>(null);
-  const runIdRef = useRef<string | null>(null);
-  const appliedBudgetMsRef = useRef<number>(0);
-  const controllersRef = useRef<{
-    controller: AbortController | null;
-  }>({ controller: null });
+  const requestIdRef = useRef<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const lastFenRef = useRef<string | null>(null);
-  const lastEvalKeyRef = useRef<string | null>(null);
+  const lastRequestKeyRef = useRef<string | null>(null);
+  const inflightKeyRef = useRef<string | null>(null);
+  const debounceTimeoutRef = useRef<number | null>(null);
 
   const activeProfileConfig = useMemo(
     () => getEngineProfileConfig(activeProfileId),
@@ -165,182 +151,164 @@ export default function useCloudEngineEvaluation(
 
   useEffect(() => {
     if (!enabled || !fen) {
-      controllersRef.current.controller?.abort();
-      controllersRef.current = { controller: null };
+      if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
       setIsEvaluating(false);
       setLastError(null);
-      runIdRef.current = null;
+      requestIdRef.current = null;
       return;
     }
 
-    controllersRef.current.controller?.abort();
-    const controller = new AbortController();
-    controllersRef.current.controller = controller;
-    appliedBudgetMsRef.current = 0;
+    const normalizedFen = typeof fen === "string" ? fen.trim() : "";
+    if (!normalizedFen) return;
+    lastFenRef.current = normalizedFen;
 
-    const runId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    runIdRef.current = runId;
-    setLastError(null);
+    const requestKey = [
+      normalizedFen,
+      activeProfileId,
+      effectiveMultiPv,
+      Number.isFinite(targetDepth) ? Math.round(Number(targetDepth)) : "depth:auto",
+      activeProfileConfig.movetimeMs ?? ENGINE_CONFIG.defaults?.movetimeMs ?? "movetime:auto",
+      activeProfileConfig.threads ?? ENGINE_CONFIG.defaults?.threads ?? "threads:auto",
+      activeProfileConfig.hashMb ?? ENGINE_CONFIG.defaults?.hashMb ?? "hash:auto",
+      activeProfileConfig.skillLevel ?? "skill:auto",
+    ].join("|");
 
-    void targetDepth;
-    const cacheKey = `${fen}::${effectiveMultiPv}::${activeProfileId}`;
-    const isNewEvalKey = cacheKey !== lastEvalKeyRef.current;
-    const cached = fenEvalCache.get(cacheKey);
-    lastFenRef.current = fen;
-    lastEvalKeyRef.current = cacheKey;
-
-    const cachedByMs = cached?.byMovetimeMs
-      ? Array.from(cached.byMovetimeMs.entries()).sort((a, b) => b[0] - a[0])
-      : [];
-    const bestCachedMs = cachedByMs[0]?.[0] ?? 0;
-    const bestCached = cachedByMs[0]?.[1];
-    if (bestCached) {
-      setEngineName(bestCached.engineName ?? CLOUD_ENGINE_NAME);
-      setEvalResult(bestCached.eval);
-      setBestLines(bestCached.bestLines);
-      setEvaluatedFen(fen);
-      appliedBudgetMsRef.current = bestCachedMs;
-    } else if (isNewEvalKey) {
-      // Keep the last known evaluation/lines visible until the new FEN result arrives.
-      setEngineName(prev => prev ?? CLOUD_ENGINE_NAME);
+    if (lastRequestKeyRef.current === requestKey || inflightKeyRef.current === requestKey) {
+      return;
     }
 
-    setIsEvaluating(true);
+    if (debounceTimeoutRef.current) {
+      window.clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = null;
+    }
 
-    const payloadBase: Omit<CloudEngineRequest, "requestId"> = {
-      fen,
-      multiPv: effectiveMultiPv,
-      searchMode: "time",
-      threads: activeProfileConfig.threads ?? ENGINE_CONFIG.defaults?.threads,
-      hashMb: activeProfileConfig.hashMb ?? ENGINE_CONFIG.defaults?.hashMb,
-      skillLevel: activeProfileConfig.skillLevel,
-      profileId: activeProfileId,
-    };
-
-    const storePassResult = (movetimeMs: number, json: CloudEngineResponse) => {
-      const lines = Array.isArray(json.lines) ? json.lines : [];
-      const mappedLines = lines.map(mapCloudLineToStockfishLine).sort((a, b) => a.multipv - b.multipv);
-      const payload: CachedEvalPayload = {
-        engineName: json.engineName ?? CLOUD_ENGINE_NAME,
-        eval: deriveEvalFromCloudLines(lines),
-        bestLines: mappedLines,
-        depth: typeof lines[0]?.depth === "number" ? lines[0].depth : undefined,
-        at: Date.now(),
-        movetimeMs,
-      };
-      const entry: CachedFenEval = fenEvalCache.get(cacheKey) ?? {};
-      entry.byMovetimeMs = entry.byMovetimeMs ?? new Map();
-      entry.byMovetimeMs.set(movetimeMs, payload);
-      fenEvalCache.set(cacheKey, entry);
-      return payload;
-    };
-
-    const shouldSkipPass = (movetimeMs: number) => {
-      const now = Date.now();
-      const entry = fenEvalCache.get(cacheKey);
-      const byMs = entry?.byMovetimeMs;
-      if (!byMs || byMs.size === 0) return false;
-      if (activeProfileId === "pro") {
-        const existing = byMs.get(movetimeMs);
-        return Boolean(existing && now - existing.at < REFINE_TTL_MS);
+    const startRequest = () => {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      requestIdRef.current = requestId;
+      inflightKeyRef.current = requestKey;
+      const fenHash = getFenHash(normalizedFen);
+      if (DEBUG_ENGINE) {
+        console.log("[engine] request start", { requestId, fenHash });
       }
-      const fresh = Array.from(byMs.entries())
-        .filter(([, payload]) => now - payload.at < REFINE_TTL_MS)
-        .sort((a, b) => b[0] - a[0]);
-      const bestMs = fresh[0]?.[0];
-      return typeof bestMs === "number" && bestMs >= movetimeMs;
-    };
+      setIsEvaluating(true);
+      setLastError(null);
 
-    const analysisQuality = activeProfileId;
-    const passes = ANALYSIS_QUALITY_PASSES_MS[analysisQuality] ?? ANALYSIS_QUALITY_PASSES_MS.standard;
-    const allowEarlyStop = analysisQuality === "light" || analysisQuality === "standard";
+      const payload: CloudEngineRequest = {
+        fen: normalizedFen,
+        movetimeMs: activeProfileConfig.movetimeMs ?? ENGINE_CONFIG.defaults?.movetimeMs,
+        multiPv: effectiveMultiPv,
+        requestId,
+        searchMode: "depth",
+        targetDepth: Number.isFinite(targetDepth) ? Math.max(1, Math.round(Number(targetDepth))) : undefined,
+        threads: activeProfileConfig.threads ?? ENGINE_CONFIG.defaults?.threads,
+        hashMb: activeProfileConfig.hashMb ?? ENGINE_CONFIG.defaults?.hashMb,
+        skillLevel: activeProfileConfig.skillLevel,
+        profileId: activeProfileId,
+      };
 
-    const runPasses = async () => {
+      const currentRequestKey = requestKey;
+      const run = async () => {
       try {
-        let previousEval: StockfishEval | null = null;
-        let previousPvPrefix: string | null = null;
-
-        for (const movetimeMs of passes) {
-          if (controller.signal.aborted || runIdRef.current !== runId || lastFenRef.current !== fen) return;
-          if (shouldSkipPass(movetimeMs)) continue;
-
-          const requestId = `${runId}-t${movetimeMs}`;
-          const payload: CloudEngineRequest = { ...payloadBase, requestId, movetimeMs };
-
-          const response = await fetch("/api/engine/eval", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-          });
-          if (!response.ok) {
-            const errorPayload = await response.json().catch(() => ({}));
-            throw new Error(
-              `Cloud eval HTTP ${response.status}: ${errorPayload?.error ?? "Unknown error from cloud backend"}`
-            );
+        const response = await fetch("/api/engine/eval", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const errorPayload = await response.json().catch(() => ({}));
+          throw new Error(
+            `Cloud eval HTTP ${response.status}: ${errorPayload?.error ?? "Unknown error from cloud backend"}`
+          );
+        }
+        const json = (await response.json()) as CloudEngineResponse;
+        if (controller.signal.aborted || requestIdRef.current !== requestId) {
+          if (DEBUG_ENGINE) {
+            console.log("[engine] ignored stale response", {
+              requestId,
+              fenHash,
+              reason: controller.signal.aborted ? "aborted" : "superseded",
+            });
           }
-          const json = (await response.json()) as CloudEngineResponse;
-          if (controller.signal.aborted || runIdRef.current !== runId || lastFenRef.current !== fen) return;
-
-          const cachedPayload = storePassResult(movetimeMs, json);
-          if (movetimeMs >= appliedBudgetMsRef.current) {
-            appliedBudgetMsRef.current = movetimeMs;
-            setEngineName(cachedPayload.engineName ?? CLOUD_ENGINE_NAME);
-            setEvalResult(cachedPayload.eval);
-            setBestLines(cachedPayload.bestLines);
-            setEvaluatedFen(fen);
+          return;
+        }
+        const lines = Array.isArray(json.lines) ? json.lines : [];
+        const mappedLines = lines.map(mapCloudLineToStockfishLine).sort((a, b) => a.multipv - b.multipv);
+        const nextEval = deriveEvalFromCloudLines(lines);
+        if (DEBUG_ENGINE) {
+          const scoreLabel =
+            typeof nextEval?.mate === "number"
+              ? `M${nextEval.mate}`
+              : typeof nextEval?.cp === "number"
+                ? `${Math.round(nextEval.cp)}`
+                : "--";
+          console.log("[engine] response", { requestId, fenHash, score: scoreLabel });
+        }
+        setEngineName(CLOUD_ENGINE_NAME);
+        setEvalResult(nextEval);
+        setBestLines(mappedLines);
+        setEvaluatedFen(normalizedFen);
+        setIsEvaluating(false);
+        requestIdRef.current = null;
+        lastRequestKeyRef.current = currentRequestKey;
+      } catch (error) {
+        if (controller.signal.aborted || requestIdRef.current !== requestId) {
+          if (DEBUG_ENGINE) {
+            console.log("[engine] ignored stale response", {
+              requestId,
+              fenHash,
+              reason: controller.signal.aborted ? "aborted" : "superseded",
+            });
           }
-
-          if (allowEarlyStop) {
-            const currentPvPrefix = getPvPrefix(cachedPayload.bestLines[0] ?? null, 4);
-            const currentEval = cachedPayload.eval;
-            const prevScore = getEvalComparable(previousEval);
-            const nextScore = getEvalComparable(currentEval);
-
-            const pvMatches =
-              typeof currentPvPrefix === "string" &&
-              typeof previousPvPrefix === "string" &&
-              currentPvPrefix === previousPvPrefix;
-
-            const scoreStable = (() => {
-              if (!prevScore || !nextScore) return false;
-              if (prevScore.kind !== nextScore.kind) return false;
-              if (prevScore.kind === "mate") return prevScore.value === nextScore.value;
-              return Math.abs(nextScore.value - prevScore.value) <= 10;
-            })();
-
-            if (pvMatches && scoreStable) {
-              break;
-            }
-
-            previousEval = currentEval;
-            previousPvPrefix = currentPvPrefix;
-          } else if (analysisQuality === "pro") {
-            // Pro explicitly bypasses stability checks: always run full pass schedule unless aborted.
-          }
+          return;
         }
         setIsEvaluating(false);
-      } catch (error) {
-        if (controller.signal.aborted || runIdRef.current !== runId || lastFenRef.current !== fen) return;
         setLastError(error instanceof Error ? error.message : String(error ?? "Unknown error"));
-        setIsEvaluating(false);
+      } finally {
+        if (inflightKeyRef.current === currentRequestKey) {
+          inflightKeyRef.current = null;
+        }
       }
     };
 
-    runPasses();
+      run();
+    };
+
+    const debounceMs = Number.isFinite(options.debounceMs ?? NaN) ? Math.max(0, Math.round(options.debounceMs as number)) : 0;
+    if (debounceMs > 0) {
+      debounceTimeoutRef.current = window.setTimeout(startRequest, debounceMs);
+    } else {
+      startRequest();
+    }
 
     return () => {
-      controller.abort();
+      if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
+      abortControllerRef.current?.abort();
     };
   }, [
     activeProfileConfig.hashMb,
+    activeProfileConfig.movetimeMs,
     activeProfileConfig.skillLevel,
     activeProfileConfig.threads,
     activeProfileId,
+    depthSteps,
+    effectiveDepthIndex,
     effectiveMultiPv,
     enabled,
     fen,
     targetDepth,
+    options.debounceMs,
   ]);
 
   const setActiveProfileId = (next: EngineProfileId) => {

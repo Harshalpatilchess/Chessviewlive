@@ -9,6 +9,7 @@ type BoardsNavigationProps = {
   paneQuery?: string;
   compact?: boolean;
   hrefBuilder?: (board: BoardNavigationEntry, options: { paneQuery: string; isFinished: boolean }) => string;
+  onBoardClick?: (board: BoardNavigationEntry) => boolean | void;
   emptyLabel?: string;
 };
 
@@ -18,6 +19,7 @@ export const BoardsNavigation = ({
   paneQuery,
   compact = false,
   hrefBuilder,
+  onBoardClick,
   emptyLabel = "No other boards available for this round yet.",
 }: BoardsNavigationProps) => {
   const resolvedBoards = boards ?? [];
@@ -36,10 +38,10 @@ export const BoardsNavigation = ({
             paneQuery={paneQuery}
             compact={compact}
             hrefBuilder={hrefBuilder}
+            onBoardClick={onBoardClick}
           />
         ))}
       </div>
     </div>
   );
 };
-

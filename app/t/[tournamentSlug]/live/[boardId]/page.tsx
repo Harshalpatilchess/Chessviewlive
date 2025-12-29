@@ -35,6 +35,10 @@ const buildQueryString = (searchParams?: Record<string, string | string[] | unde
 export default async function TournamentLivePage({ params, searchParams }: TournamentLivePageProps) {
   const resolvedParams = await params;
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const embedParam = resolvedSearchParams?.embed;
+  const embedValue = Array.isArray(embedParam) ? embedParam[0] : embedParam;
+  const isEmbed =
+    typeof embedValue === "string" && (embedValue === "1" || embedValue.toLowerCase() === "true");
   const tournamentSlug = normalizeTournamentSlug((resolvedParams?.tournamentSlug ?? "").trim().toLowerCase());
   const boardId = resolvedParams?.boardId ?? "";
   const parsed = parseBoardIdentifier(boardId, tournamentSlug);
@@ -80,7 +84,7 @@ export default async function TournamentLivePage({ params, searchParams }: Tourn
 
   const normalizedResult = normalizeResult(game.result);
   const isFinished = game.status === "final" || Boolean(normalizedResult) || Boolean(game.finalFen);
-  if (isFinished) {
+  if (isFinished && !isEmbed) {
     redirect(
       `/t/${encodeURIComponent(tournamentSlug)}/replay/${encodeURIComponent(boardId)}${buildQueryString(resolvedSearchParams)}`
     );

@@ -10,6 +10,8 @@ export const ANALYSIS_QUALITY_PASSES_MS: Record<AnalysisQuality, number[]> = {
   standard: [150, 300, 600, 1200],
   pro: [150, 300, 600, 1200, 2000, 4000],
 };
+
+export const ENGINE_DISPLAY_NAME = "Stockfish 17.1 NNUE cloud";
 export type EngineProfileConfig = {
   id: EngineProfileId;
   label: string;
@@ -231,7 +233,7 @@ export const CURRENT_ENGINE_CONFIG: EngineConfig = {
       backend: "cloud",
       enabled: ENABLE_CLOUD_ENGINE,
       backendId: "cloud-nnue",
-      engineName: "Stockfish (cloud)",
+      engineName: ENGINE_DISPLAY_NAME,
       label: "cloud",
     },
   },
@@ -251,8 +253,8 @@ export function formatEngineBackendLabel(
   options?: { engineName?: string | null }
 ): { short: string; full: string } {
   void backend;
-  const name = (options?.engineName ?? "Stockfish 17.1").trim() || "Stockfish 17.1";
+  const name = (options?.engineName ?? ENGINE_DISPLAY_NAME).trim() || ENGINE_DISPLAY_NAME;
   const shorten = (value: string) => (value.length > 40 ? `${value.slice(0, 37)}...` : value);
-  const full = "Stockfish 17.1";
+  const full = ENGINE_DISPLAY_NAME;
   return { full, short: shorten(name || full) };
 }

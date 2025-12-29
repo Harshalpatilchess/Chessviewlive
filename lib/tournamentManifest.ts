@@ -1,3 +1,11 @@
+import {
+  DEFAULT_TOURNAMENT_SLUG,
+  buildBoardIdentifier,
+  isBoardIdentifier,
+  normalizeBoardIdentifier,
+  normalizeTournamentSlug,
+} from "@/lib/boardId";
+
 export type FideTitle = "GM" | "IM" | "FM" | "CM" | "WGM" | "WIM" | "WFM" | "WCM" | null;
 
 export type GameResult = "1-0" | "0-1" | "½-½" | "1/2-1/2" | "·" | "*" | null;
@@ -48,6 +56,19 @@ export type TournamentManifest = Record<number, TournamentRoundManifest>;
 export type TournamentManifests = Record<TournamentSlug, TournamentManifest>;
 
 const normalizeSlug = (slug?: string | null) => (slug ? slug.trim().toLowerCase() : "");
+
+export type FeaturedBroadcastMode = "live" | "replay";
+
+export type FeaturedBroadcastSelection = {
+  tournamentSlug: string;
+  boardId: string;
+  mode: FeaturedBroadcastMode;
+};
+
+export type FeaturedBroadcastSelectionInput = {
+  tournamentOrder?: string[];
+  currentTournamentOrder?: string[];
+};
 
 const worldCupRound1: TournamentRoundManifest = {
   1: {
@@ -397,6 +418,287 @@ const manifests: TournamentManifests = {
     1: worldCupRound1,
   },
 };
+
+type BoardEntry = {
+  round: number;
+  board: number;
+  boardId: string;
+  game: TournamentGame;
+};
+
+const isDevEnv = process.env.NODE_ENV !== "production";
+let hasWarnedInvalidOverride = false;
+let hasLoggedSelection = false;
+
+const normalizeOptionalSlug = (value?: string | null) => {
+  if (!value) return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return normalizeTournamentSlug(trimmed);
+};
+
+const normalizeOptionalValue = (value?: string | null) => {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+const coerceFeaturedMode = (value?: string | null): FeaturedBroadcastMode | null => {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "live" || normalized === "replay") return normalized;
+  return null;
+};
+
+const warnInvalidOverride = (reason: string, details: Record<string, unknown>) => {
+  if (!isDevEnv || hasWarnedInvalidOverride) return;
+  hasWarnedInvalidOverride = true;
+  console.warn("[featured] Invalid featured override. Falling back to automatic selection.", {
+    reason,
+    ...details,
+  });
+};
+
+const logSelection = (selection: FeaturedBroadcastSelection, source: string) => {
+  if (!isDevEnv || hasLoggedSelection) return;
+  hasLoggedSelection = true;
+  console.info("[featured] Selected featured broadcast.", {
+    source,
+    tournamentSlug: selection.tournamentSlug,
+    boardId: selection.boardId,
+    mode: selection.mode,
+  });
+};
+
+const getTournamentBoardEntries = (tournamentSlug: string): BoardEntry[] => {
+  const manifest = manifests[tournamentSlug];
+  if (!manifest) return [];
+  const rounds = Object.keys(manifest)
+    .map(key => Number(key))
+    .filter(round => Number.isFinite(round))
+    .sort((a, b) => a - b);
+  const entries: BoardEntry[] = [];
+  rounds.forEach(round => {
+    const roundManifest = manifest[round];
+    if (!roundManifest) return;
+    const boards = Object.keys(roundManifest)
+      .map(key => Number(key))
+      .filter(board => Number.isFinite(board))
+      .sort((a, b) => a - b);
+    boards.forEach(board => {
+      const game = roundManifest[board];
+      if (!game) return;
+      entries.push({
+        round,
+        board,
+        boardId: buildBoardIdentifier(tournamentSlug, round, board),
+        game,
+      });
+    });
+  });
+  return entries;
+};
+
+const normalizeResult = (result?: GameResult | null): GameResult | null => {
+  if (!result || result === "·" || result === "*") return null;
+  return result === "1/2-1/2" ? "½-½" : result;
+};
+
+const isFinishedGame = (game: TournamentGame): boolean => {
+  const normalizedResult = normalizeResult(game.result);
+  return game.status === "final" || Boolean(normalizedResult) || Boolean(game.finalFen);
+};
+
+const selectBoardFromTournament = (
+  tournamentSlug: string,
+  preferredMode?: FeaturedBroadcastMode | null
+): FeaturedBroadcastSelection | null => {
+  const entries = getTournamentBoardEntries(tournamentSlug);
+  if (entries.length === 0) return null;
+  const hasExplicitLive = entries.some(entry => entry.game.status === "live");
+  const tournamentIsCurrent = entries.some(entry => !isFinishedGame(entry.game));
+  const liveCandidates = hasExplicitLive
+    ? entries.filter(entry => entry.game.status === "live")
+    : tournamentIsCurrent
+      ? entries.filter(entry => !isFinishedGame(entry.game))
+      : [];
+  const boardOneEntry = entries.find(entry => entry.round === 1 && entry.board === 1) ?? null;
+  const liveEntry = liveCandidates.length > 0
+    ? liveCandidates.find(entry => entry.round === 1 && entry.board === 1) ?? liveCandidates[0]
+    : null;
+  const replayEntry = boardOneEntry ?? entries[0];
+
+  if (preferredMode === "live") {
+    if (!liveEntry) return null;
+    return {
+      tournamentSlug,
+      boardId: liveEntry.boardId,
+      mode: "live",
+    };
+  }
+  if (preferredMode === "replay") {
+    return {
+      tournamentSlug,
+      boardId: replayEntry.boardId,
+      mode: "replay",
+    };
+  }
+  if (liveEntry) {
+    return {
+      tournamentSlug,
+      boardId: liveEntry.boardId,
+      mode: "live",
+    };
+  }
+  return {
+    tournamentSlug,
+    boardId: replayEntry.boardId,
+    mode: "replay",
+  };
+};
+
+const normalizeTournamentOrder = (values?: string[]) => {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  values.forEach(value => {
+    const normalized = normalizeOptionalSlug(value);
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    result.push(normalized);
+  });
+  return result;
+};
+
+const getFallbackTournamentOrder = (primaryOrder: string[]) => {
+  const seen = new Set(primaryOrder);
+  const remaining = Object.keys(manifests)
+    .sort()
+    .filter(slug => !seen.has(slug));
+  return [...primaryOrder, ...remaining];
+};
+
+const readFeaturedOverride = () => {
+  const tournamentSlug = normalizeOptionalValue(
+    process.env.FEATURED_TOURNAMENT_SLUG ?? process.env.NEXT_PUBLIC_FEATURED_TOURNAMENT_SLUG
+  );
+  const boardId = normalizeOptionalValue(
+    process.env.FEATURED_BOARD_ID ?? process.env.NEXT_PUBLIC_FEATURED_BOARD_ID
+  );
+  const modeRaw = normalizeOptionalValue(
+    process.env.FEATURED_MODE ?? process.env.NEXT_PUBLIC_FEATURED_MODE
+  );
+  const mode = coerceFeaturedMode(modeRaw);
+  return {
+    tournamentSlug,
+    boardId,
+    mode,
+    modeRaw,
+    hasOverride: Boolean(tournamentSlug || boardId || modeRaw),
+  };
+};
+
+const resolveOverrideSelection = (
+  input: FeaturedBroadcastSelectionInput
+): FeaturedBroadcastSelection | null => {
+  const override = readFeaturedOverride();
+  if (!override.hasOverride) return null;
+  if (override.modeRaw && !override.mode) {
+    warnInvalidOverride("invalid-mode", { mode: override.modeRaw });
+    return null;
+  }
+
+  const normalizedOverrideSlug = normalizeOptionalSlug(override.tournamentSlug);
+
+  if (override.boardId) {
+    if (!isBoardIdentifier(override.boardId)) {
+      warnInvalidOverride("invalid-board-id", {
+        tournamentSlug: normalizedOverrideSlug || undefined,
+        boardId: override.boardId,
+      });
+      return null;
+    }
+    const normalized = normalizeBoardIdentifier(
+      override.boardId,
+      normalizedOverrideSlug || DEFAULT_TOURNAMENT_SLUG
+    );
+    const parsed = normalized.parsed;
+    if (normalizedOverrideSlug && parsed.tournamentSlug !== normalizedOverrideSlug) {
+      warnInvalidOverride("tournament-mismatch", {
+        tournamentSlug: normalizedOverrideSlug,
+        boardId: override.boardId,
+      });
+      return null;
+    }
+    const game = getTournamentGameManifest(parsed.tournamentSlug, parsed.round, parsed.board);
+    if (!game) {
+      warnInvalidOverride("board-not-configured", {
+        tournamentSlug: parsed.tournamentSlug,
+        boardId: normalized.normalizedBoardId,
+      });
+      return null;
+    }
+    const derivedMode =
+      override.mode ??
+      (game.status === "live" || !isFinishedGame(game) ? "live" : "replay");
+    return {
+      tournamentSlug: parsed.tournamentSlug,
+      boardId: normalized.normalizedBoardId,
+      mode: derivedMode,
+    };
+  }
+
+  const tournamentOrder = normalizeTournamentOrder(input.tournamentOrder);
+  const currentOrder = normalizeTournamentOrder(input.currentTournamentOrder);
+  const topTournament = currentOrder[0] ?? tournamentOrder[0] ?? "";
+  const targetTournament = normalizedOverrideSlug || topTournament;
+  if (!targetTournament) {
+    warnInvalidOverride("missing-tournament", {});
+    return null;
+  }
+  const selection = selectBoardFromTournament(targetTournament, override.mode);
+  if (!selection) {
+    warnInvalidOverride("selection-unavailable", {
+      tournamentSlug: targetTournament,
+      mode: override.mode ?? undefined,
+    });
+    return null;
+  }
+  return selection;
+};
+
+export function selectFeaturedBroadcast(
+  input: FeaturedBroadcastSelectionInput = {}
+): FeaturedBroadcastSelection | null {
+  const overrideSelection = resolveOverrideSelection(input);
+  if (overrideSelection) {
+    logSelection(overrideSelection, "override");
+    return overrideSelection;
+  }
+
+  const tournamentOrder = normalizeTournamentOrder(input.tournamentOrder);
+  const currentOrder = normalizeTournamentOrder(input.currentTournamentOrder);
+  const topTournament = currentOrder[0] ?? tournamentOrder[0] ?? "";
+
+  if (topTournament) {
+    const selection = selectBoardFromTournament(topTournament);
+    if (selection) {
+      logSelection(selection, "auto-top");
+      return selection;
+    }
+  }
+
+  const fallbackOrder = getFallbackTournamentOrder(tournamentOrder);
+  for (const slug of fallbackOrder) {
+    const selection = selectBoardFromTournament(slug);
+    if (selection) {
+      logSelection(selection, "auto-fallback");
+      return selection;
+    }
+  }
+
+  return null;
+}
 
 export function getTournamentGameManifest(
   tournamentSlug?: string | null,

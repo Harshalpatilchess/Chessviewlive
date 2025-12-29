@@ -10,7 +10,10 @@ type MainEvalBarProps = {
   label?: string | null;
   advantage?: EvaluationAdvantage;
   show: boolean;
+  forceMount?: boolean;
   orientation?: "white" | "black";
+  density?: "default" | "compact";
+  variant?: "full" | "mini";
 };
 
 const clampValue = (val: number | null | undefined) => {
@@ -43,12 +46,17 @@ const MainEvalBar = ({
   label,
   advantage,
   show,
+  forceMount = false,
   orientation = "white",
+  density = "default",
+  variant = "full",
 }: MainEvalBarProps) => {
-  const [displayValue, setDisplayValue] = useState<number | null>(null);
-  const [displayLabel, setDisplayLabel] = useState<string>("-");
-  const [displayAdvantage, setDisplayAdvantage] = useState<EvaluationAdvantage>(null);
-  const [targetLabelNumber, setTargetLabelNumber] = useState<number | null>(null);
+  const isMini = variant === "mini";
+  const isCompact = density === "compact";
+  const [displayValue, setDisplayValue] = useState<number>(50);
+  const [displayLabel, setDisplayLabel] = useState<string>("0.0");
+  const [displayAdvantage, setDisplayAdvantage] = useState<EvaluationAdvantage>("equal");
+  const [targetLabelNumber, setTargetLabelNumber] = useState<number | null>(0);
   const animatedValue = useTweenedNumber(displayValue, { durationMs: 200 });
   const animatedLabelNumber = useTweenedNumber(targetLabelNumber, { durationMs: 200 });
 
@@ -80,8 +88,7 @@ const MainEvalBar = ({
     console.log("[EVAL BAR] input eval", { value, displayValue, label, displayLabel });
   }, [displayLabel, displayValue, label, show, value]);
 
-  if (!show) return null;
-  if (displayValue == null || displayLabel === "-") return null;
+  if (!show && !forceMount) return null;
   const barValue = typeof animatedValue === "number" ? animatedValue : displayValue;
   const barLabel = (() => {
     if (typeof animatedLabelNumber === "number" && Number.isFinite(animatedLabelNumber)) {
@@ -91,14 +98,23 @@ const MainEvalBar = ({
     return displayLabel;
   })();
   const barAdvantage = displayAdvantage ?? deriveAdvantageFromValue(barValue) ?? "equal";
+  const containerClassName = isMini
+    ? "flex h-full items-center justify-center"
+    : `hidden md:flex h-full flex-col items-center justify-center ${
+        isCompact ? "min-h-[200px]" : "min-h-[320px]"
+      }`;
+  const visibilityClassName = show ? "opacity-100" : "opacity-0";
+  const resolvedContainerClassName = `${containerClassName} transition-opacity duration-150 ease-out ${visibilityClassName}`;
+  const barSize = isMini ? "mini" : isCompact ? "compact" : "default";
 
   return (
-    <div className="hidden min-h-[320px] md:flex flex-col items-center justify-center">
+    <div className={resolvedContainerClassName} aria-hidden={!show}>
       <EvalBar
         value={barValue}
         scoreLabel={barLabel}
         advantage={barAdvantage}
         orientation={orientation}
+        size={barSize}
       />
     </div>
   );

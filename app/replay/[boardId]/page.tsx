@@ -17,7 +17,7 @@ import ViewerShell from "@/components/viewer/ViewerShell";
 import LiveHeaderControls from "@/components/viewer/LiveHeaderControls";
 import { pliesToFenAt } from "@/lib/chess/pgn";
 import { mapEvaluationToBar, type EvaluationBarMapping } from "@/lib/engine/evalMapping";
-import type { EngineProfileId } from "@/lib/engine/config";
+import { ENGINE_DISPLAY_NAME, type EngineProfileId } from "@/lib/engine/config";
 import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
 import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
 import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
@@ -145,10 +145,18 @@ type RouteParams = {
 };
 
 type Orientation = "white" | "black";
-const REPLAY_ENGINE_LABEL = "Stockfish 17.1 NNUE (Cloud)";
 
-export default function ReplayBoardPage(props: { params: Promise<RouteParams> }) {
-  const { boardId, tournamentId } = use(props.params);
+type ReplayBoardPageProps = {
+  params: Promise<RouteParams>;
+  viewerDensity?: "default" | "compact";
+  viewerVariant?: "full" | "mini";
+};
+export default function ReplayBoardPage({
+  params,
+  viewerDensity,
+  viewerVariant = "full",
+}: ReplayBoardPageProps) {
+  const { boardId, tournamentId } = use(params);
   const searchParams = useSearchParams();
   const router = useRouter();
   const embedParam = searchParams?.get("embed");
@@ -158,7 +166,9 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const recordingUrlParam = searchParams?.get("recordingUrl");
   const paneParam = useMemo(() => {
     const pane = searchParams?.get("pane");
-    return pane === "boards" || pane === "live" || pane === "notation" ? pane : "notation";
+    return pane === "boards" || pane === "live" || pane === "notation" || pane === "engine"
+      ? pane
+      : "notation";
   }, [searchParams]);
   const enginePanelOpen = paneParam === "notation";
   const explicitRecordingParam = useMemo(() => {
@@ -174,15 +184,28 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   }, [latestParam]);
   const isEmbed =
     embedParam === "1" || (typeof embedParam === "string" && embedParam.toLowerCase() === "true");
-  const mainClassName = "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden";
-  const contentClassName = "mx-auto flex-1 w-full max-w-[1440px] px-4 py-1.5 lg:px-8";
-  const mediaContainerClass = isEmbed
-    ? "aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm"
-    : "aspect-video w-full max-h-[40vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[48vh]";
+  const isMini = viewerVariant === "mini";
+  const resolvedDensity = viewerDensity ?? (isMini ? "compact" : "default");
+  const isCompact = resolvedDensity === "compact";
+  const mainClassName = isCompact
+    ? "flex h-full min-h-0 flex-col bg-transparent text-slate-100 overflow-hidden"
+    : "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden";
+  const contentClassName = isCompact
+    ? "mx-auto flex-1 w-full min-h-0 px-2 py-2"
+    : "mx-auto flex-1 w-full max-w-[1440px] px-4 py-1.5 lg:px-8";
+  const mediaContainerClass = isMini
+    ? undefined
+    : isEmbed
+      ? "aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm"
+      : isCompact
+        ? "aspect-video w-full max-h-[24vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[28vh]"
+        : "aspect-video w-full max-h-[40vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[48vh]";
   const videoClassName = "h-full w-full object-contain";
   const controlRowClass = isEmbed
     ? "flex flex-wrap items-center gap-2 mb-2 text-xs"
-    : "flex items-center gap-2 mb-3";
+    : isCompact
+      ? "flex items-center gap-1.5 mb-2 text-[11px]"
+      : "flex items-center gap-2 mb-3";
   const [videos, setVideos] = useState<Item[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
@@ -357,6 +380,8 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     [exitAnalysisView, liveIndex]
   );
 
+  const shouldFetchEval = analysisEnabled || gaugeEnabled;
+  const evalDebounceMs = analysisEnabled ? 150 : 320;
   const {
     eval: engineEval,
     bestLines: engineLines,
@@ -371,12 +396,7 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     setDepthIndex,
     setMultiPv,
     setActiveProfileId,
-  } = useCloudEngineEvaluation(
-    displayFen,
-    {
-      enabled: analysisEnabled,
-    }
-  );
+  } = useCloudEngineEvaluation(displayFen, { enabled: shouldFetchEval, debounceMs: evalDebounceMs });
   const handleProfileChange = useCallback(
     (value: EngineProfileId) => {
       setActiveProfileId(value);
@@ -395,8 +415,8 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const engineDisplayFen = engineEvaluatedFen ?? displayFen;
   const { value: evaluation, label: evaluationLabel, advantage: evaluationAdvantage } = useMemo<EvaluationBarMapping>(() => {
     if (!gaugeEnabled) return { value: null, label: null, advantage: null };
-    return mapEvaluationToBar(effectiveEngineEval, engineDisplayFen, { enabled: analysisEnabled });
-  }, [analysisEnabled, effectiveEngineEval, engineDisplayFen, gaugeEnabled]);
+    return mapEvaluationToBar(engineEval, engineDisplayFen, { enabled: shouldFetchEval });
+  }, [engineDisplayFen, engineEval, gaugeEnabled, shouldFetchEval]);
   const replayStatus = { label: "REPLAY", className: "bg-blue-600/80 text-white" };
   const boardNavBase = useMemo(() => {
     if (!tournamentHref) return null;
@@ -440,10 +460,18 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   }, [tournamentId, tournamentBoardIds]);
   const isTournamentBoardConfigured = useMemo(() => {
     if (!tournamentId) return true;
-    if (!tournamentBoardIds || tournamentBoardIds.length === 0) return false;
-    const normalized = boardId.trim().toLowerCase();
-    return tournamentBoardIds.some(id => id.trim().toLowerCase() === normalized);
-  }, [tournamentBoardIds, tournamentId, boardId]);
+    const parsed = parseBoardIdentifier(boardId, tournamentId);
+    const normalizedBoardId = buildBoardIdentifier(
+      parsed.tournamentSlug,
+      parsed.round,
+      parsed.board
+    ).toLowerCase();
+    const parsedOk = normalizedBoardId === boardId.trim().toLowerCase();
+    const game = parsedOk
+      ? getTournamentGameManifest(tournamentId, parsed.round, parsed.board)
+      : null;
+    return Boolean(game);
+  }, [tournamentId, boardId]);
   const currentBoardLabel = useMemo(() => formatBoardLabel(boardId), [boardId]);
   const [speed, setSpeed] = useState<SpeedValue>(() => {
     if (typeof window === "undefined") return 1;
@@ -1621,13 +1649,14 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     </>
   );
   const headerControls = (
-    <div className="flex flex-wrap items-center justify-end gap-2">
+    <div className={isMini ? "flex w-full flex-wrap items-center justify-between gap-2" : "flex flex-wrap items-center justify-end gap-2"}>
       <LiveHeaderControls
         boardId={boardId}
         tournamentSlug={boardSelection.tournamentSlug}
         maxRounds={MAX_ROUNDS}
         boardsPerRound={BOARDS_PER_ROUND}
         pane={paneParam}
+        density={resolvedDensity}
       />
     </div>
   );
@@ -1638,6 +1667,8 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       headerTitle={displayGameLabel}
       headerControls={headerControls}
       boardId={boardId}
+      density={resolvedDensity}
+      variant={viewerVariant}
       boardDomId="cv-replay-board"
       boardOrientation={orientation}
       boardPosition={displayFen}
@@ -1719,7 +1750,7 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
 	        setMultiPv,
 	        setDepthIndex: handleDepthChange,
 	        fen: engineDisplayFen,
-	        engineName: REPLAY_ENGINE_LABEL,
+	        engineName: ENGINE_DISPLAY_NAME,
 	        engineBackend: "cloud",
 	        setEngineBackend: undefined,
 	        plies,
