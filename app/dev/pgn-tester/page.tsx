@@ -22,7 +22,7 @@ export default function PgnTesterPage() {
     for (let i = 0; i < cappedIndex; i += 1) {
       const move = parsed.moveList?.[i];
       if (!move) break;
-      chess.move(move, { sloppy: true });
+      chess.move(move, { strict: false });
     }
     return chess.fen();
   }, [chess, moveIndex, parsed.finalFen, parsed.moveList, replayable]);

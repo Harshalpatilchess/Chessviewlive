@@ -60,36 +60,37 @@ export const mapEvaluationToBar = (
   const activeColor = extractActiveColor(fen);
   const povMultiplier = activeColor === "w" ? 1 : -1; // convert engine POV (side to move) to White POV
 
-  let score = 0;
   let label = neutral.label;
   let advantage: NonNullEvaluationAdvantage = "equal";
+  let displayEvalNumber: number | null = null;
 
   if (evaluation && typeof evaluation.mate === "number") {
     const signed = evaluation.mate * povMultiplier;
-    score = Math.sign(signed || 0) * 1000;
     const mateLabel = signed === 0 ? formatEvalLabel(0) : `${signed > 0 ? "" : "-"}M${Math.abs(evaluation.mate)}`;
     label = formatEvalLabel(null, { isMate: true, mateLabel });
     advantage = signed > 0 ? "white" : signed < 0 ? "black" : "equal";
+    displayEvalNumber = signed > 0 ? 4 : signed < 0 ? -4 : 0;
   } else if (evaluation && typeof evaluation.cp === "number") {
     const adjusted = evaluation.cp * povMultiplier;
     if (Math.abs(adjusted) <= EQUAL_CP_THRESHOLD) {
-      score = 0;
       label = formatEvalLabel(0);
       advantage = "equal";
+      displayEvalNumber = 0;
     } else {
-      const clamped = clamp(adjusted, -1000, 1000);
-      score = clamped;
-      label = formatEvalCompact(adjusted / 100);
+      const pawns = adjusted / 100;
+      label = formatEvalCompact(pawns);
       advantage = adjusted > 0 ? "white" : adjusted < 0 ? "black" : "equal";
+      displayEvalNumber = Math.round(pawns * 10) / 10;
     }
   }
 
-  const clampedScore = clamp(score, -1000, 1000);
-  const percent = 50 + (clampedScore / 1000) * 50;
-
-  if (label == null) {
+  if (label == null || displayEvalNumber == null) {
     return neutral;
   }
+
+  const clampedEval = clamp(displayEvalNumber, -4, 4);
+  const rankPosition = clampedEval + 4;
+  const percent = (rankPosition / 8) * 100;
 
   return { value: percent, label, advantage };
 };

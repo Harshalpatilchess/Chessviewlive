@@ -1,6 +1,7 @@
 import { isEngineProfileId, type EngineProfileId } from "./config";
 
 const STORAGE_KEY = "chessviewlive.engineProfile";
+const STORAGE_MULTI_PV_KEY = "chessviewlive.engineMultiPv";
 const LEGACY_KEYS = ["cv:engine:strengthProfile"];
 
 function readProfileFromStorage(key: string): EngineProfileId | null {
@@ -29,6 +30,33 @@ export function saveEngineProfileId(profile: EngineProfileId) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, profile);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clampMultiPv(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(3, Math.round(value)));
+}
+
+export function getSavedEngineMultiPv(): number | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_MULTI_PV_KEY);
+    if (raw === null) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? clampMultiPv(parsed) : null;
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+export function saveEngineMultiPv(value: number) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(STORAGE_MULTI_PV_KEY, String(clampMultiPv(value)));
   } catch {
     // ignore storage errors
   }

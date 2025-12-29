@@ -6,6 +6,7 @@ import RoundBoardSelector from "@/components/viewer/RoundBoardSelector";
 import {
   DEFAULT_TOURNAMENT_SLUG,
   buildBoardIdentifier,
+  normalizeTournamentSlug,
   parseBoardIdentifier,
 } from "@/lib/boardId";
 
@@ -14,7 +15,10 @@ type LiveHeaderControlsProps = {
   tournamentSlug?: string;
   maxRounds?: number;
   boardsPerRound?: number;
-  pane?: "notation" | "live" | "boards";
+  pane?: "notation" | "live" | "boards" | "engine";
+  disableBoardSwitch?: boolean;
+  onBoardSwitchBlocked?: () => void;
+  density?: "default" | "compact";
 };
 
 const clampValue = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -25,11 +29,14 @@ export default function LiveHeaderControls({
   maxRounds = 9,
   boardsPerRound = 20,
   pane,
+  disableBoardSwitch = false,
+  onBoardSwitchBlocked,
+  density = "default",
 }: LiveHeaderControlsProps) {
   const router = useRouter();
-  const fallbackSlug = (tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG).toLowerCase();
+  const fallbackSlug = normalizeTournamentSlug((tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG).toLowerCase());
   const parsed = useMemo(() => parseBoardIdentifier(boardId, fallbackSlug), [boardId, fallbackSlug]);
-  const activeSlug = tournamentSlug ?? parsed.tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG;
+  const activeSlug = normalizeTournamentSlug(tournamentSlug ?? parsed.tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG);
 
   const initialRound = clampValue(parsed.round, 1, maxRounds);
   const initialBoard = clampValue(parsed.board, 1, boardsPerRound);
@@ -55,6 +62,9 @@ export default function LiveHeaderControls({
       boardsPerRound={boardsPerRound}
       onSelectionChange={handleSelectionChange}
       pane={pane}
+      selectionLocked={disableBoardSwitch}
+      onSelectionBlocked={onBoardSwitchBlocked}
+      density={density}
     />
   );
 }

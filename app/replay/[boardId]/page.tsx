@@ -17,8 +17,10 @@ import ViewerShell from "@/components/viewer/ViewerShell";
 import LiveHeaderControls from "@/components/viewer/LiveHeaderControls";
 import { pliesToFenAt } from "@/lib/chess/pgn";
 import { mapEvaluationToBar, type EvaluationBarMapping } from "@/lib/engine/evalMapping";
-import type { EngineProfileId } from "@/lib/engine/config";
+import { ENGINE_DISPLAY_NAME, type EngineProfileId } from "@/lib/engine/config";
 import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
+import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
+import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
 import { getReplayProgress, setReplayProgress, clearReplayProgress } from "@/lib/replayProgress";
 import { getReplaySpeed, setReplaySpeed } from "@/lib/replaySettings";
 import {
@@ -143,10 +145,18 @@ type RouteParams = {
 };
 
 type Orientation = "white" | "black";
-const REPLAY_ENGINE_LABEL = "Stockfish 17.1 NNUE (Cloud)";
 
-export default function ReplayBoardPage(props: { params: Promise<RouteParams> }) {
-  const { boardId, tournamentId } = use(props.params);
+type ReplayBoardPageProps = {
+  params: Promise<RouteParams>;
+  viewerDensity?: "default" | "compact";
+  viewerVariant?: "full" | "mini";
+};
+export default function ReplayBoardPage({
+  params,
+  viewerDensity,
+  viewerVariant = "full",
+}: ReplayBoardPageProps) {
+  const { boardId, tournamentId } = use(params);
   const searchParams = useSearchParams();
   const router = useRouter();
   const embedParam = searchParams?.get("embed");
@@ -156,7 +166,9 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const recordingUrlParam = searchParams?.get("recordingUrl");
   const paneParam = useMemo(() => {
     const pane = searchParams?.get("pane");
-    return pane === "boards" || pane === "live" || pane === "notation" ? pane : "notation";
+    return pane === "boards" || pane === "live" || pane === "notation" || pane === "engine"
+      ? pane
+      : "notation";
   }, [searchParams]);
   const enginePanelOpen = paneParam === "notation";
   const explicitRecordingParam = useMemo(() => {
@@ -172,17 +184,28 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   }, [latestParam]);
   const isEmbed =
     embedParam === "1" || (typeof embedParam === "string" && embedParam.toLowerCase() === "true");
-  const mainClassName = "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden";
-  const contentClassName = isEmbed
-    ? "mx-auto flex-1 w-full max-w-[1440px] px-3 py-3"
-    : "mx-auto flex-1 w-full max-w-[1440px] px-4 py-4 lg:px-8";
-  const mediaContainerClass = isEmbed
-    ? "aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm"
-    : "aspect-video w-full max-h-[40vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[48vh]";
+  const isMini = viewerVariant === "mini";
+  const resolvedDensity = viewerDensity ?? (isMini ? "compact" : "default");
+  const isCompact = resolvedDensity === "compact";
+  const mainClassName = isCompact
+    ? "flex h-full min-h-0 flex-col bg-transparent text-slate-100 overflow-hidden"
+    : "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden";
+  const contentClassName = isCompact
+    ? "mx-auto flex-1 w-full min-h-0 px-2 py-2"
+    : "mx-auto flex-1 w-full max-w-[1440px] px-4 py-1.5 lg:px-8";
+  const mediaContainerClass = isMini
+    ? undefined
+    : isEmbed
+      ? "aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm"
+      : isCompact
+        ? "aspect-video w-full max-h-[24vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[28vh]"
+        : "aspect-video w-full max-h-[40vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[48vh]";
   const videoClassName = "h-full w-full object-contain";
   const controlRowClass = isEmbed
     ? "flex flex-wrap items-center gap-2 mb-2 text-xs"
-    : "flex items-center gap-2 mb-3";
+    : isCompact
+      ? "flex items-center gap-1.5 mb-2 text-[11px]"
+      : "flex items-center gap-2 mb-3";
   const [videos, setVideos] = useState<Item[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [currentIndex, setCurrentIndex] = useState<number>(-1);
@@ -273,13 +296,13 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const displayGameLabel = DEMO_TOURNAMENT_LABEL;
 
   const plies = useMemo(() => {
-    if (boardSelection.tournamentSlug === "worldcup" && boardSelection.round === 1) {
+    if (boardSelection.tournamentSlug === "worldcup2025" && boardSelection.round === 1) {
       const pgn = getWorldCupPgnForBoard(boardSelection.board);
       const parsed = pliesFromPgn(pgn);
       if (parsed.length) {
         return parsed;
       }
-      console.warn("[worldcup] Falling back to demo plies for board", {
+      console.warn("[worldcup2025] Falling back to demo plies for board", {
         boardNumber: boardSelection.board,
         boardId,
       });
@@ -290,30 +313,60 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     plies.length ? plies.length - 1 : -1
   );
   const [analysisEnabled, setAnalysisEnabled] = useState(false);
-  const [orientation, setOrientation] = useState<Orientation>("white");
+  const { orientation, toggleOrientation: handleFlip } = usePersistentBoardOrientation("white");
   const [gaugeEnabled, setGaugeEnabled] = useState(true);
   const liveIndex = plies.length - 1;
   const canPrev = currentMoveIndex > -1;
   const canNext = liveIndex >= 0 && currentMoveIndex < liveIndex;
   const liveActive = liveIndex >= 0 && currentMoveIndex === liveIndex;
 
-  const handlePrev = useCallback(
-    () => setCurrentMoveIndex(prev => Math.max(-1, prev - 1)),
-    []
-  );
-  const handleNext = useCallback(() => {
+  const handlePrevOfficial = useCallback(() => setCurrentMoveIndex(prev => Math.max(-1, prev - 1)), []);
+  const handleNextOfficial = useCallback(() => {
     if (liveIndex < 0) return;
     setCurrentMoveIndex(prev => Math.min(liveIndex, prev + 1));
   }, [liveIndex]);
+
+  const boardPosition = pliesToFenAt(plies, currentMoveIndex);
+  const {
+    analysisViewActive,
+    analysisBranches,
+    activeAnalysisAnchorPly,
+    analysisCursorNodeId,
+    displayFen,
+    exitAnalysisView,
+    selectAnalysisMove,
+    promoteAnalysisNode,
+    deleteAnalysisLine,
+    deleteAnalysisFromHere,
+    onPieceDrop: handlePieceDrop,
+  } = useBoardAnalysis({
+    boardId,
+    tournamentId,
+    plies,
+    currentMoveIndex,
+    officialFen: boardPosition,
+    onOfficialPrev: handlePrevOfficial,
+    onOfficialNext: handleNextOfficial,
+  });
+
+  const handlePrev = useCallback(() => {
+    exitAnalysisView();
+    handlePrevOfficial();
+  }, [exitAnalysisView, handlePrevOfficial]);
+  const handleNext = useCallback(() => {
+    exitAnalysisView();
+    handleNextOfficial();
+  }, [exitAnalysisView, handleNextOfficial]);
   const handleLive = useCallback(() => {
     if (liveIndex < 0) return;
+    exitAnalysisView();
     setCurrentMoveIndex(liveIndex);
-  }, [liveIndex]);
-  const handleFlip = () => setOrientation(prev => (prev === "white" ? "black" : "white"));
+  }, [exitAnalysisView, liveIndex]);
 
   const handleNotationPlySelect = useCallback(
     (plyIdx: number) => {
       if (!Number.isFinite(plyIdx)) return;
+      exitAnalysisView();
       if (plyIdx < 0) {
         setCurrentMoveIndex(-1);
         return;
@@ -324,32 +377,16 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       }
       setCurrentMoveIndex(Math.min(plyIdx, liveIndex));
     },
-    [liveIndex]
+    [exitAnalysisView, liveIndex]
   );
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
-      }
-      if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-        event.preventDefault();
-        handleNext();
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-        event.preventDefault();
-        handlePrev();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleNext, handlePrev]);
-
-  const boardPosition = pliesToFenAt(plies, currentMoveIndex);
+  const shouldFetchEval = analysisEnabled || gaugeEnabled;
+  const evalDebounceMs = analysisEnabled ? 150 : 320;
   const {
     eval: engineEval,
     bestLines: engineLines,
     isEvaluating: engineThinking,
+    evaluatedFen: engineEvaluatedFen,
     activeProfileId,
     activeProfileConfig,
     multiPv,
@@ -359,12 +396,7 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
     setDepthIndex,
     setMultiPv,
     setActiveProfileId,
-  } = useCloudEngineEvaluation(
-    boardPosition,
-    {
-      enabled: analysisEnabled,
-    }
-  );
+  } = useCloudEngineEvaluation(displayFen, { enabled: shouldFetchEval, debounceMs: evalDebounceMs });
   const handleProfileChange = useCallback(
     (value: EngineProfileId) => {
       setActiveProfileId(value);
@@ -380,10 +412,11 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   const effectiveEngineEval = analysisEnabled ? engineEval : null;
   const effectiveEngineLines = analysisEnabled ? engineLines : [];
   const effectiveEngineThinking = analysisEnabled && engineThinking;
+  const engineDisplayFen = engineEvaluatedFen ?? displayFen;
   const { value: evaluation, label: evaluationLabel, advantage: evaluationAdvantage } = useMemo<EvaluationBarMapping>(() => {
     if (!gaugeEnabled) return { value: null, label: null, advantage: null };
-    return mapEvaluationToBar(effectiveEngineEval, boardPosition, { enabled: analysisEnabled });
-  }, [boardPosition, analysisEnabled, effectiveEngineEval, gaugeEnabled]);
+    return mapEvaluationToBar(engineEval, engineDisplayFen, { enabled: shouldFetchEval });
+  }, [engineDisplayFen, engineEval, gaugeEnabled, shouldFetchEval]);
   const replayStatus = { label: "REPLAY", className: "bg-blue-600/80 text-white" };
   const boardNavBase = useMemo(() => {
     if (!tournamentHref) return null;
@@ -427,10 +460,18 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
   }, [tournamentId, tournamentBoardIds]);
   const isTournamentBoardConfigured = useMemo(() => {
     if (!tournamentId) return true;
-    if (!tournamentBoardIds || tournamentBoardIds.length === 0) return false;
-    const normalized = boardId.trim().toLowerCase();
-    return tournamentBoardIds.some(id => id.trim().toLowerCase() === normalized);
-  }, [tournamentBoardIds, tournamentId, boardId]);
+    const parsed = parseBoardIdentifier(boardId, tournamentId);
+    const normalizedBoardId = buildBoardIdentifier(
+      parsed.tournamentSlug,
+      parsed.round,
+      parsed.board
+    ).toLowerCase();
+    const parsedOk = normalizedBoardId === boardId.trim().toLowerCase();
+    const game = parsedOk
+      ? getTournamentGameManifest(tournamentId, parsed.round, parsed.board)
+      : null;
+    return Boolean(game);
+  }, [tournamentId, boardId]);
   const currentBoardLabel = useMemo(() => formatBoardLabel(boardId), [boardId]);
   const [speed, setSpeed] = useState<SpeedValue>(() => {
     if (typeof window === "undefined") return 1;
@@ -1607,46 +1648,15 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       {bookmarkSection}
     </>
   );
-  const analysisToggle = (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={analysisEnabled}
-      onClick={() => setAnalysisEnabled(prev => !prev)}
-      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-        analysisEnabled
-          ? "border-emerald-300/60 bg-emerald-500/10 text-emerald-100 hover:border-emerald-200"
-          : "border-slate-700 bg-slate-900/60 text-slate-200 hover:border-slate-500"
-      }`}
-    >
-      <span
-        className={`flex h-5 w-9 items-center rounded-full px-[3px] transition ${
-          analysisEnabled ? "bg-emerald-500/60" : "bg-slate-700"
-        }`}
-      >
-        <span
-          className={`h-4 w-4 rounded-full bg-white shadow transition ${
-            analysisEnabled ? "translate-x-4" : "translate-x-0"
-          }`}
-        />
-      </span>
-      <span className="leading-tight">
-        <span className="block text-[11px] uppercase tracking-wide text-slate-300">Analysis</span>
-        <span className="block text-[11px] font-semibold text-white">
-          {analysisEnabled ? "On (cloud)" : "Off"}
-        </span>
-      </span>
-    </button>
-  );
   const headerControls = (
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      {analysisToggle}
+    <div className={isMini ? "flex w-full flex-wrap items-center justify-between gap-2" : "flex flex-wrap items-center justify-end gap-2"}>
       <LiveHeaderControls
         boardId={boardId}
         tournamentSlug={boardSelection.tournamentSlug}
         maxRounds={MAX_ROUNDS}
         boardsPerRound={BOARDS_PER_ROUND}
         pane={paneParam}
+        density={resolvedDensity}
       />
     </div>
   );
@@ -1657,9 +1667,21 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       headerTitle={displayGameLabel}
       headerControls={headerControls}
       boardId={boardId}
+      density={resolvedDensity}
+      variant={viewerVariant}
       boardDomId="cv-replay-board"
       boardOrientation={orientation}
-      boardPosition={boardPosition}
+      boardPosition={displayFen}
+      onPieceDrop={handlePieceDrop}
+      analysisViewActive={analysisViewActive}
+      analysisBranches={analysisBranches}
+      activeAnalysisAnchorPly={activeAnalysisAnchorPly}
+      analysisCursorNodeId={analysisCursorNodeId}
+      onExitAnalysisView={exitAnalysisView}
+      onSelectAnalysisMove={selectAnalysisMove}
+      onPromoteAnalysisNode={promoteAnalysisNode}
+      onDeleteAnalysisLine={deleteAnalysisLine}
+      onDeleteAnalysisFromHere={deleteAnalysisFromHere}
       showEval={gaugeEnabled}
       evaluation={evaluation}
       evaluationLabel={evaluationLabel}
@@ -1705,8 +1727,6 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
       previousBoardHref={previousBoardHref}
       nextBoardHref={nextBoardHref}
       boardNumber={boardNumber}
-      mainClassName={mainClassName}
-      contentClassName={contentClassName}
       mediaContainerClass={mediaContainerClass}
       videoPane={{
         containerRef: videoContainerRef,
@@ -1715,26 +1735,25 @@ export default function ReplayBoardPage(props: { params: Promise<RouteParams> })
         secondaryPill: overlayLabel,
         footer: videoFooter,
       }}
-      notation={{
-        engineOn: analysisEnabled,
-        setEngineOn: setAnalysisEnabled,
-        engineEval: effectiveEngineEval,
-        engineLines: effectiveEngineLines,
-        engineThinking: effectiveEngineThinking,
-        engineProfileId: activeProfileId,
-        engineProfile: activeProfileConfig,
-        setEngineProfileId: handleProfileChange,
-        multiPv,
-        depthIndex,
-        depthSteps,
-        targetDepth,
-        setMultiPv,
-        setDepthIndex: handleDepthChange,
-        fen: boardPosition,
-        engineName: REPLAY_ENGINE_LABEL,
-        engineBackend: "cloud",
-        setEngineBackend: undefined,
-        plies,
+	      notation={{
+	        engineOn: analysisEnabled,
+	        setEngineOn: setAnalysisEnabled,
+	        engineEval: effectiveEngineEval,
+	        engineLines: effectiveEngineLines,
+	        engineProfileId: activeProfileId,
+	        engineProfile: activeProfileConfig,
+	        setEngineProfileId: handleProfileChange,
+	        multiPv,
+	        depthIndex,
+	        depthSteps,
+	        targetDepth,
+	        setMultiPv,
+	        setDepthIndex: handleDepthChange,
+	        fen: engineDisplayFen,
+	        engineName: ENGINE_DISPLAY_NAME,
+	        engineBackend: "cloud",
+	        setEngineBackend: undefined,
+	        plies,
         currentMoveIndex,
         onMoveSelect: handleNotationPlySelect,
       }}

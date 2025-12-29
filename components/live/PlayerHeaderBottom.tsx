@@ -25,8 +25,8 @@ const PlayerHeaderBottom = ({ player, color, clock }: PlayerHeaderProps) => {
         <Flag country={player.country} className="text-base leading-none" />
         <div className="flex min-w-0 items-center gap-2 truncate text-xs sm:text-sm">
           <span className="truncate font-semibold text-white">{nameLabel}</span>
-          <span className="text-[11px] text-slate-400 sm:text-xs">({player.rating})</span>
-          <span className="text-[11px] uppercase tracking-wide text-slate-400">{player.country}</span>
+          <span className="rating-text text-[11px] sm:text-xs">({player.rating})</span>
+          <span className="rating-text text-[11px] uppercase tracking-wide text-slate-400">{player.country}</span>
         </div>
       </div>
       <span className="shrink-0 font-mono text-sm font-semibold tracking-wide text-slate-100">

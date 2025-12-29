@@ -1,369 +1,605 @@
-'use client';
+import type { Metadata } from "next";
+import Image from "next/image";
+import Link from "next/link";
+import {
+  Archive,
+  LayoutGrid,
+  Menu,
+  MessageCircle,
+  Radio,
+  Search,
+  Trophy,
+  Users,
+} from "lucide-react";
+import InstallAppCard from "@/components/site/InstallAppCard";
+import TournamentHeroImage from "@/components/site/TournamentHeroImage";
+import { LiveViewer } from "@/components/viewer/LiveViewer";
+import ReplayBoardPage from "@/app/replay/[boardId]/page";
+import { DEFAULT_TOURNAMENT_SLUG } from "@/lib/boardId";
+import {
+  getTournamentBoardsForRound,
+  getTournamentGameManifest,
+  selectFeaturedBroadcast,
+  type TournamentGame,
+} from "@/lib/tournamentManifest";
 
-import Image from 'next/image';
-import Link from 'next/link';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import BroadcastBoardShell from "@/components/viewer/BroadcastBoardShell";
-import Header from "../components/site/Header";
-import SectionTitle from "../components/site/SectionTitle";
-import NowLiveBadge from "../components/site/NowLiveBadge";
-import { formatEvalLabel } from "@/lib/engine/evalMapping";
+export const metadata: Metadata = {
+  title: "Chessviewlive",
+  description: "Premium live + replay chess viewing with instant cloud eval.",
+};
 
-type Category = 'All' | 'Top' | 'Live' | 'Upcoming' | 'Past';
+type HomeProps = {
+  searchParams?: Record<string, string | string[] | undefined>;
+};
 
-export default function Home() {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [active, setActive] = useState<Category>('All');
-  const [evalOpen, setEvalOpen] = useState(false);
-  const [evalScore, setEvalScore] = useState(0);
+type TournamentSummary = {
+  slug: string;
+  name: string;
+  round: number;
+  boardCount: number;
+  topRating: number | null;
+  topPlayer: string | null;
+  heroImage?: string | null;
+  placeholderFlag?: string | null;
+  roundLabel?: string | null;
+  startsAt?: string | null;
+  topPlayers?: Array<{ name: string; rating: number }>;
+  isLive: boolean;
+  isPast: boolean;
+};
 
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return;
-    const saved = window.localStorage.getItem('theme');
-    if (saved === 'dark') {
-      document.documentElement.classList.add('dark');
+type TournamentConfig = {
+  slug: string;
+  name: string;
+  round: number;
+  heroImage?: string | null;
+  placeholderFlag?: string | null;
+  roundLabel?: string | null;
+  startsAt?: string | null;
+  topPlayers?: Array<{ name: string; rating: number }>;
+};
+
+const DEFAULT_ROUND = 1;
+const TOURNAMENTS: TournamentConfig[] = [
+  {
+    slug: DEFAULT_TOURNAMENT_SLUG,
+    name: "Worldcup 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 1",
+    startsAt: "2025-08-02T12:00:00Z",
+    // Dev check: ensure /tournaments/worldcup2025/hero.jpg exists under /public.
+    heroImage: "/tournaments/worldcup2025/hero.jpg",
+    topPlayers: [
+      { name: "Carlsen", rating: 2830 },
+      { name: "Nepomniachtchi", rating: 2778 },
+      { name: "Aronian", rating: 2765 },
+      { name: "Firouzja", rating: 2760 },
+      { name: "Caruana", rating: 2798 },
+    ],
+  },
+  {
+    slug: "candidates2026",
+    name: "Candidates 2026",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 3",
+    startsAt: "2026-03-12T14:00:00Z",
+    placeholderFlag: "\uD83C\uDDEE\uD83C\uDDF3",
+    topPlayers: [
+      { name: "Praggnanandhaa", rating: 2766 },
+      { name: "Nakamura", rating: 2775 },
+      { name: "Abdusattorov", rating: 2768 },
+      { name: "So", rating: 2757 },
+    ],
+  },
+  {
+    slug: "norway-chess-2026",
+    name: "Norway Chess 2026",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 5",
+    startsAt: "2026-05-18T12:00:00Z",
+    placeholderFlag: "\uD83C\uDDF3\uD83C\uDDF4",
+    topPlayers: [
+      { name: "Carlsen", rating: 2830 },
+      { name: "Firouzja", rating: 2760 },
+      { name: "Gukesh", rating: 2765 },
+      { name: "Caruana", rating: 2798 },
+    ],
+  },
+  {
+    slug: "tata-steel-2026",
+    name: "Tata Steel 2026",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 7",
+    startsAt: "2026-01-20T11:00:00Z",
+    placeholderFlag: "\uD83C\uDDF3\uD83C\uDDF1",
+    topPlayers: [
+      { name: "Ding", rating: 2791 },
+      { name: "Nepomniachtchi", rating: 2778 },
+      { name: "Wei Yi", rating: 2759 },
+      { name: "Aronian", rating: 2765 },
+    ],
+  },
+  {
+    slug: "grandprix-2025",
+    name: "FIDE Grand Prix 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Stage 2",
+    startsAt: "2025-11-02T15:00:00Z",
+    placeholderFlag: "\uD83C\uDDFA\uD83C\uDDF8",
+    topPlayers: [
+      { name: "So", rating: 2757 },
+      { name: "Dominguez", rating: 2740 },
+      { name: "Aronian", rating: 2765 },
+      { name: "Duda", rating: 2750 },
+    ],
+  },
+  {
+    slug: "sinquefield-2025",
+    name: "Sinquefield Cup 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 4",
+    startsAt: "2025-08-20T17:00:00Z",
+    placeholderFlag: "\uD83C\uDDFA\uD83C\uDDF8",
+    topPlayers: [
+      { name: "Caruana", rating: 2798 },
+      { name: "Nakamura", rating: 2775 },
+      { name: "So", rating: 2757 },
+      { name: "Aronian", rating: 2765 },
+    ],
+  },
+  {
+    slug: "us-championship-2025",
+    name: "US Championship 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 6",
+    startsAt: "2025-10-05T16:00:00Z",
+    placeholderFlag: "\uD83C\uDDFA\uD83C\uDDF8",
+    topPlayers: [
+      { name: "Nakamura", rating: 2775 },
+      { name: "So", rating: 2757 },
+      { name: "Sevian", rating: 2715 },
+      { name: "Xiong", rating: 2705 },
+    ],
+  },
+  {
+    slug: "india-open-2025",
+    name: "India Open 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 2",
+    startsAt: "2025-09-12T09:00:00Z",
+    placeholderFlag: "\uD83C\uDDEE\uD83C\uDDF3",
+    topPlayers: [
+      { name: "Gukesh", rating: 2765 },
+      { name: "Arjun", rating: 2751 },
+      { name: "Vidit", rating: 2736 },
+      { name: "Praggnanandhaa", rating: 2766 },
+    ],
+  },
+  {
+    slug: "qatar-masters-2025",
+    name: "Qatar Masters 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Round 8",
+    startsAt: "2025-12-01T10:00:00Z",
+    placeholderFlag: "\uD83C\uDDF6\uD83C\uDDE6",
+    topPlayers: [
+      { name: "Mamedyarov", rating: 2746 },
+      { name: "Firouzja", rating: 2760 },
+      { name: "Carlsen", rating: 2830 },
+      { name: "Aronian", rating: 2765 },
+    ],
+  },
+  {
+    slug: "speed-chess-2025",
+    name: "Speed Chess 2025",
+    round: DEFAULT_ROUND,
+    roundLabel: "Stage 1",
+    startsAt: "2025-07-28T18:00:00Z",
+    placeholderFlag: "\uD83C\uDDEC\uD83C\uDDE7",
+    topPlayers: [
+      { name: "Nakamura", rating: 2775 },
+      { name: "Carlsen", rating: 2830 },
+      { name: "Firouzja", rating: 2760 },
+      { name: "So", rating: 2757 },
+    ],
+  },
+];
+
+const resolveParam = (value?: string | string[]) => {
+  if (Array.isArray(value)) return value[0];
+  return value;
+};
+
+const getTopRatedPlayer = (games: TournamentGame[]) => {
+  let topRating = 0;
+  let topPlayer: string | null = null;
+
+  games.forEach(game => {
+    if (Number.isFinite(game.whiteRating) && game.whiteRating > topRating) {
+      topRating = game.whiteRating;
+      topPlayer = game.white;
     }
-  }, []);
+    if (Number.isFinite(game.blackRating) && game.blackRating > topRating) {
+      topRating = game.blackRating;
+      topPlayer = game.black;
+    }
+  });
 
-  const toggleDark = () => {
-    if (typeof window === 'undefined' || typeof document === 'undefined') return;
-    const el = document.documentElement;
-    el.classList.toggle('dark');
-    window.localStorage.setItem('theme', el.classList.contains('dark') ? 'dark' : 'light');
+  return {
+    topRating: topRating > 0 ? topRating : null,
+    topPlayer,
+  };
+};
+
+const normalizeFilter = (value?: string): "all" | "current" | "past" | "top" => {
+  const candidate = value?.toLowerCase() ?? "all";
+  if (candidate === "current" || candidate === "past" || candidate === "top") return candidate;
+  return "all";
+};
+
+const formatRelativeTime = (target: Date, now: Date = new Date()) => {
+  const diffSeconds = Math.round((target.getTime() - now.getTime()) / 1000);
+  const absSeconds = Math.abs(diffSeconds);
+  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+  if (absSeconds < 60) return rtf.format(diffSeconds, "second");
+  const diffMinutes = Math.round(diffSeconds / 60);
+  if (Math.abs(diffMinutes) < 60) return rtf.format(diffMinutes, "minute");
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 24) return rtf.format(diffHours, "hour");
+  const diffDays = Math.round(diffHours / 24);
+  if (Math.abs(diffDays) < 30) return rtf.format(diffDays, "day");
+  const diffMonths = Math.round(diffDays / 30);
+  if (Math.abs(diffMonths) < 12) return rtf.format(diffMonths, "month");
+  const diffYears = Math.round(diffMonths / 12);
+  return rtf.format(diffYears, "year");
+};
+
+export default function Home({ searchParams }: HomeProps) {
+  const filterParam = resolveParam(searchParams?.filter);
+  const queryParam = resolveParam(searchParams?.q);
+  const activeFilter = normalizeFilter(filterParam);
+  const query = queryParam?.trim().toLowerCase() ?? "";
+
+  const summaries = TOURNAMENTS.map(tournament => {
+    const boards = getTournamentBoardsForRound(tournament.slug, tournament.round) ?? [];
+    const games = boards
+      .map(board => getTournamentGameManifest(tournament.slug, tournament.round, board))
+      .filter((game): game is TournamentGame => Boolean(game));
+    const { topRating, topPlayer } = getTopRatedPlayer(games);
+    const isLive = games.some(game => game.status === "live");
+    const isPast = games.length > 0 && games.every(game => game.status === "final");
+
+    return {
+      ...tournament,
+      boardCount: boards.length,
+      topRating,
+      topPlayer,
+      isLive,
+      isPast,
+    } satisfies TournamentSummary;
+  });
+
+  const currentTournamentOrder = summaries
+    .filter(summary => summary.isLive)
+    .map(summary => summary.slug);
+  const allTournamentOrder = summaries.map(summary => summary.slug);
+  const featuredSelection = selectFeaturedBroadcast({
+    tournamentOrder: allTournamentOrder,
+    currentTournamentOrder,
+  });
+
+  const filteredByStatus = summaries.filter(summary => {
+    if (activeFilter === "current") return summary.isLive;
+    if (activeFilter === "past") return summary.isPast;
+    return true;
+  });
+  const filteredSummaries = query
+    ? filteredByStatus.filter(summary =>
+        summary.name.toLowerCase().includes(query) || summary.slug.includes(query)
+      )
+    : filteredByStatus;
+
+  const filterLabelMap: Record<string, string> = {
+    all: "All tournaments",
+    current: "Current tournaments",
+    past: "Past tournaments",
+    top: "Top players",
   };
 
-  const items: Array<{ key: Category; icon: ReactNode; label: string }> = [
-    { key: 'All', icon: <span aria-hidden>♟️</span>, label: 'All Tournaments' },
-    { key: 'Top', icon: <span aria-hidden>⭐</span>, label: 'Top Tournaments' },
-    { key: 'Live', icon: <span aria-hidden>🔴</span>, label: 'Live Tournaments' },
-    { key: 'Past', icon: <span aria-hidden>🕘</span>, label: 'Past Tournaments' },
-    { key: 'Upcoming', icon: <span aria-hidden>⏳</span>, label: 'Upcoming Tournaments' },
-  ];
+  const buildFilterHref = (filterKey: string) => {
+    const params = new URLSearchParams();
+    if (filterKey && filterKey !== "all") params.set("filter", filterKey);
+    if (queryParam) params.set("q", queryParam);
+    const queryString = params.toString();
+    return queryString ? `/?${queryString}` : "/";
+  };
 
-  const evalPercent = useMemo(() => {
-    const clamped = Math.max(-10, Math.min(10, evalScore));
-    return ((clamped + 10) / 20) * 100;
-  }, [evalScore]);
+  const featuredViewerParams = featuredSelection
+    ? {
+        boardId: featuredSelection.boardId,
+        tournamentId: featuredSelection.tournamentSlug,
+      }
+    : null;
 
   return (
-    <>
-      <Header />
-      <div className="min-h-screen bg-[#020817] text-slate-100">
-        <header className="sticky top-0 z-20 border-b border-white/10 bg-[#030f25]/80 backdrop-blur">
-          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setSidebarOpen(s => !s)}
-                aria-label="Toggle menu"
-                className="rounded-full border border-white/10 p-2 text-white transition hover:border-white/40 hover:bg-white/5"
-              >
-                <div className="mb-[5px] h-[2px] w-5 bg-current" />
-                <div className="mb-[5px] h-[2px] w-5 bg-current" />
-                <div className="h-[2px] w-5 bg-current" />
-              </button>
-              <div className="flex items-center gap-3">
-                <Image
-                  src="/logo.png"
-                  alt="Chessviewlive"
-                  width={160}
-                  height={44}
-                  className="h-9 w-auto"
-                  priority
-                />
-                <p className="text-xs uppercase tracking-[0.4em] text-slate-400">
-                  The best online chess viewing experience.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <button
-                  onClick={() => setSearchOpen(o => !o)}
-                  className="rounded-full border border-white/10 p-2 transition hover:border-white/40 hover:bg-white/5"
-                  aria-label="Open search"
-                >
-                  🔍
-                </button>
-                {searchOpen && (
-                  <input
-                    autoFocus
-                    onBlur={() => setSearchOpen(false)}
-                    placeholder="Search tournaments…"
-                    className="absolute right-0 top-1/2 w-64 -translate-y-1/2 rounded-full border border-white/10 bg-[#07142c] px-4 py-2 text-sm text-white outline-none shadow-xl"
-                  />
-                )}
-              </div>
-
-              <button className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-emerald-300">
-                Sign in
-              </button>
-            </div>
-          </div>
-        </header>
-
-        <div className="container mx-auto px-4 py-6 space-y-6">
-          <div className="mx-auto flex max-w-7xl gap-4 pb-12 pt-6 px-0">
-            <aside
-              className={`${sidebarOpen ? 'w-64' : 'w-20'} sticky top-16 h-[calc(100vh-70px)] rounded-3xl border border-white/10 bg-[#030d1f]/70 p-2 transition-all`}
-            >
-              <div className="flex h-full flex-col justify-between">
-                <nav className="flex-1 space-y-2 overflow-y-auto">
-                  {items.map(item => (
-                    <button
-                      key={item.key}
-                      onClick={() => setActive(item.key)}
-                      className={`w-full rounded-2xl border px-3 py-2 text-left transition ${
-                        active === item.key
-                          ? 'border-emerald-400/60 bg-emerald-400/10 text-white'
-                          : 'border-white/10 bg-white/5 text-slate-300 hover:border-white/40 hover:text-white'
-                      }`}
-                      title={item.label}
-                      aria-pressed={active === item.key}
-                    >
-                      <span className="flex items-center gap-3 text-sm">
-                        <span className="text-lg">{item.icon}</span>
-                        {sidebarOpen && <span>{item.label}</span>}
-                      </span>
-                    </button>
-                  ))}
-                </nav>
-
-                {sidebarOpen && (
-                  <div className="mt-4 space-y-2 rounded-2xl border border-white/10 p-3">
-                    <Link className="block rounded-full px-3 py-2 text-sm text-slate-300 hover:bg-white/5" href="/contact">
-                      Contact us
-                    </Link>
-                    <Link className="block rounded-full px-3 py-2 text-sm text-slate-300 hover:bg-white/5" href="/organizer">
-                      Organizer
-                    </Link>
-                    <Link className="block rounded-full px-3 py-2 text-sm text-slate-300 hover:bg-white/5" href="/legal">
-                      Legal
-                    </Link>
-                    <button
-                      onClick={toggleDark}
-                      className="w-full rounded-full border border-white/10 px-3 py-2 text-sm text-slate-300 transition hover:border-white/40 hover:text-white"
-                    >
-                      🌓 Dark / Light
-                    </button>
-                    <div className="flex items-center gap-3 pt-2 text-slate-400">
-                      <a
-                        href="https://www.instagram.com/"
-                        aria-label="Instagram"
-                        className="rounded-full border border-white/10 p-2 hover:border-white/40"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 24 24"
-                          width="20"
-                          height="20"
-                          aria-hidden="true"
-                          className="fill-current"
-                        >
-                          <path d="M7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Zm0 2a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H7Zm5 3.5A5.5 5.5 0 1 1 6.5 13 5.5 5.5 0 0 1 12 7.5Zm0 2A3.5 3.5 0 1 0 15.5 13 3.5 3.5 0 0 0 12 9.5Zm6.25-3a1.25 1.25 0 1 1-1.25 1.25A1.25 1.25 0 0 1 18.25 6.5Z" />
-                        </svg>
-                      </a>
-                      <a
-                        href="https://www.youtube.com/"
-                        aria-label="YouTube"
-                        className="rounded-full border border-white/10 p-2 hover:border-white/40"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          viewBox="0 0 24 24"
-                          width="22"
-                          height="22"
-                          aria-hidden="true"
-                          className="fill-current"
-                        >
-                          <path d="M23.5 7.2a4 4 0 0 0-2.8-2.8C18.8 3.8 12 3.8 12 3.8s-6.8 0-8.7.6A4 4 0 0 0 .5 7.2 41.7 41.7 0 0 0 0 12a41.7 41.7 0 0 0 .5 4.8 4 4 0 0 0 2.8 2.8c1.9.6 8.7.6 8.7.6s6.8 0 8.7-.6a4 4 0 0 0 2.8-2.8A41.7 41.7 0 0 0 24 12a41.7 41.7 0 0 0-.5-4.8ZM9.75 15.02V8.98L15.5 12z" />
-                        </svg>
-                      </a>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </aside>
-
-            <section className="flex-1 space-y-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <SectionTitle>Featured</SectionTitle>
-                <NowLiveBadge />
-              </div>
-              <div className="mt-2" />
-              <div className="space-y-3">
-                <p className="px-4 text-xs uppercase tracking-[0.4em] text-slate-500">Live board preview</p>
-                <BroadcastBoardShell />
-              </div>
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <div className="rounded-3xl border border-white/10 bg-[#050f22] p-4 shadow-[0_20px_60px_rgba(2,8,23,0.6)]">
-                  <div className="grid aspect-square grid-cols-8 overflow-hidden rounded-2xl border border-white/10 bg-[#030c1c]">
-                    {Array.from({ length: 64 }).map((_, i) => (
-                      <div
-                        key={i}
-                        className={(Math.floor(i / 8) + (i % 8)) % 2 === 0 ? 'bg-[#f0d9b5]' : 'bg-[#b58863]'}
-                      />
-                    ))}
-                  </div>
-                  <div className="mt-4 flex items-center justify-center gap-3">
-                    <button className="rounded-full border border-white/20 px-4 py-2 text-sm text-slate-200 transition hover:border-white/60">
-                      ◀︎ Prev
-                    </button>
-                    <button className="rounded-full bg-rose-500/90 px-5 py-2 text-sm font-semibold text-white shadow-md shadow-rose-500/30">
-                      ● Live
-                    </button>
-                    <button className="rounded-full border border-white/20 px-4 py-2 text-sm text-slate-200 transition hover:border-white/60">
-                      Next ▶︎
-                    </button>
-                  </div>
-                  <pre className="mt-4 rounded-2xl border border-white/5 bg-[#040c1a] p-3 text-xs text-slate-300">
-{`1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *`}
-                  </pre>
-                </div>
-
-                <div className="rounded-3xl border border-white/10 bg-[#050f22] p-4 shadow-[0_20px_60px_rgba(2,8,23,0.6)]">
-                  <div className="flex flex-col gap-3 lg:h-full">
-                    <div className="flex-1 rounded-2xl border border-white/10 bg-black/40 text-center text-sm text-slate-400">
-                      <div className="flex h-full items-center justify-center">Live video here</div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        className="rounded-full border border-white/20 px-3 py-2 text-sm text-slate-200 transition hover:border-white/60"
-                        onClick={() => setEvalOpen(v => !v)}
-                        aria-pressed={evalOpen}
-                        aria-label="Toggle evaluation bar"
-                      >
-                        Evaluation bar
-                      </button>
-                      <button className="rounded-full border border-white/20 px-3 py-2 text-sm text-slate-200 transition hover:border-white/60">
-                        Engine ON
-                      </button>
-                      <button className="rounded-full border border-white/20 px-3 py-2 text-sm text-slate-200 transition hover:border-white/60">
-                        Commentary OFF
-                      </button>
-                    </div>
-
-                    {evalOpen && (
-                      <div className="mt-3 flex items-end gap-3">
-                        <div
-                          className="relative h-40 w-4 overflow-hidden rounded-full border border-white/10 bg-black/40"
-                          aria-label="Engine evaluation gauge"
-                          title="White advantage at top, Black at bottom"
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-b from-white/40 to-black/30" />
-                          <div className="absolute bottom-0 left-0 right-0 bg-white/90" style={{ height: `${evalPercent}%` }} />
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          <div className="mb-1">Eval: {formatEvalLabel(evalScore)} (−10..+10)</div>
-                          <div className="flex gap-2">
-                            <button
-                              className="rounded-full border border-white/20 px-2 py-1"
-                              onClick={() => setEvalScore(s => Math.max(-10, s - 0.5))}
-                            >
-                              −
-                            </button>
-                            <button
-                              className="rounded-full border border-white/20 px-2 py-1"
-                              onClick={() => setEvalScore(s => Math.min(10, s + 0.5))}
-                            >
-                              +
-                            </button>
-                            <button className="rounded-full border border-white/20 px-2 py-1" onClick={() => setEvalScore(0)}>
-                              reset
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="rounded-2xl border border-white/5 bg-[#040c1a] p-3 text-sm text-slate-300">
-                      <strong>AI commentary:</strong> White gains space in the center with e4; game is balanced.
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <SectionTitle>Tournaments</SectionTitle>
-              <div>
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.4em] text-slate-500">{active} tournaments</p>
-                    <h2 className="text-2xl font-semibold text-white">Broadcast lineup</h2>
-                  </div>
-                  <Link
-                    href="/organizer"
-                    className="rounded-full border border-white/20 px-4 py-2 text-sm text-slate-200 transition hover:border-white/60"
-                  >
-                    Explore tournaments
+    <div className="min-h-screen bg-[#020817] text-slate-100">
+      <div className="flex min-h-screen">
+        <input
+          id="sidebar-toggle"
+          type="checkbox"
+          className="peer sr-only"
+          defaultChecked
+        />
+        <aside className="sticky top-0 self-start flex h-[100dvh] w-16 flex-col items-center overflow-y-auto border-r border-white/10 bg-[#030d1f]/90 px-2 py-2 transition-all duration-300 ease-out [&_.nav-item]:mx-auto [&_.nav-item]:h-11 [&_.nav-item]:w-11 [&_.nav-item]:justify-center [&_.nav-item]:gap-0 [&_.nav-item]:px-0 [&_.nav-item]:py-0 [&_.nav-item]:overflow-hidden [&_.install-card]:gap-0 [&_.install-card]:p-0 [&_.install-card-inner]:gap-0 [&_.install-card-inner]:p-0 [&_.install-cta]:hidden [&_.install-mark]:h-9 [&_.install-mark]:w-9 peer-checked:w-64 peer-checked:items-stretch peer-checked:px-3 peer-checked:[&_.nav-label]:opacity-100 peer-checked:[&_.nav-label]:translate-x-0 peer-checked:[&_.nav-label]:pointer-events-auto peer-checked:[&_.nav-label]:max-w-[12rem] peer-checked:[&_.nav-item]:mx-0 peer-checked:[&_.nav-item]:h-auto peer-checked:[&_.nav-item]:w-full peer-checked:[&_.nav-item]:gap-3 peer-checked:[&_.nav-item]:px-3 peer-checked:[&_.nav-item]:py-2 peer-checked:[&_.nav-item]:justify-start peer-checked:[&_.install-card]:px-0 peer-checked:[&_.install-card]:py-0 peer-checked:[&_.install-card-inner]:gap-1 peer-checked:[&_.install-card-inner]:px-3 peer-checked:[&_.install-card-inner]:pt-0 peer-checked:[&_.install-card-inner]:pb-2 peer-checked:[&_.install-cta]:flex peer-checked:[&_.install-cta]:w-full peer-checked:[&_.install-cta]:rounded-xl peer-checked:[&_.install-cta]:px-4 peer-checked:[&_.install-cta]:py-2 peer-checked:[&_.install-mark]:h-[140px] peer-checked:[&_.install-mark]:w-[140px]">
+          <div className="flex flex-1 flex-col">
+            <div className="pt-2">
+              <div className="flex flex-col gap-1.5">
+                <div className="hidden items-center justify-start px-1 peer-checked:flex">
+                  <Link href="/" className="flex w-full items-center">
+                    <Image
+                      src="/brand/logo-full.png"
+                      alt="Chessviewlive"
+                      width={240}
+                      height={64}
+                      className="w-full max-w-[220px] h-auto drop-shadow-[0_0_18px_rgba(59,130,246,0.35)]"
+                      priority
+                    />
                   </Link>
                 </div>
+                <label
+                  htmlFor="sidebar-toggle"
+                  className="nav-item mt-5 flex items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-slate-300 transition hover:border-white/40"
+                  aria-label="Toggle sidebar"
+                >
+                  <Menu className="h-5 w-5" aria-hidden />
+                  <span className="nav-label pointer-events-none max-w-0 overflow-hidden opacity-0 translate-x-2 transition-all">
+                    Menu
+                  </span>
+                </label>
+              </div>
 
-                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3">
-                  {Array.from({ length: 6 }).map((_, i) => (
-                    <article
-                      key={i}
-                      className="overflow-hidden rounded-3xl border border-white/10 bg-[#050f22] shadow-[0_18px_40px_rgba(2,8,23,0.45)]"
-                    >
-                      <Image
-                        src={`https://placehold.co/800x450?text=Tournament+${i + 1}`}
-                        alt={`Tournament ${i + 1}`}
-                        width={800}
-                        height={450}
-                        className="h-40 w-full object-cover"
-                        loading="lazy"
-                      />
-                      <div className="space-y-2 p-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Tournament {i + 1}</p>
-                            <div className="text-lg font-semibold text-white">Sample Event {i + 1}</div>
-                          </div>
-                          <span className="rounded-full bg-rose-500/20 px-3 py-1 text-xs font-semibold text-rose-200">
-                            NOW LIVE
-                          </span>
+              <nav className="mt-3 space-y-4">
+              {[
+                { key: "all", label: "All tournaments", icon: LayoutGrid },
+                { key: "current", label: "Current tournaments", icon: Radio },
+                { key: "past", label: "Past tournaments", icon: Archive },
+              ].map(item => {
+                const isActive = activeFilter === item.key;
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.key}
+                    href={buildFilterHref(item.key)}
+                    className={`nav-item flex items-center justify-center gap-3 rounded-2xl border px-3 py-1.5 text-sm transition ${
+                      isActive
+                        ? "border-emerald-400/60 bg-emerald-400/10 text-white"
+                        : "border-white/10 text-slate-300 hover:border-white/40 hover:text-white"
+                    }`}
+                    aria-current={isActive ? "page" : undefined}
+                    title={item.label}
+                  >
+                    <Icon className="h-5 w-5" aria-hidden />
+                    <span className="nav-label pointer-events-none max-w-0 overflow-hidden opacity-0 translate-x-2 transition-all">
+                      {item.label}
+                    </span>
+                  </Link>
+                );
+              })}
+              </nav>
+            </div>
+
+            <div className="flex flex-1 flex-col">
+              <div className="flex-1" />
+              <div className="border-t border-white/10 pt-3">
+                <Link
+                  href={buildFilterHref("top")}
+                  className={`nav-item flex items-center justify-center gap-3 rounded-2xl border px-3 py-1.5 text-sm transition ${
+                    activeFilter === "top"
+                      ? "border-emerald-400/60 bg-emerald-400/10 text-white"
+                      : "border-white/10 text-slate-300 hover:border-white/40 hover:text-white"
+                  }`}
+                  aria-current={activeFilter === "top" ? "page" : undefined}
+                  title="Top players"
+                >
+                  <Trophy className="h-5 w-5" aria-hidden />
+                  <span className="nav-label pointer-events-none max-w-0 overflow-hidden opacity-0 translate-x-2 transition-all">
+                    Top players
+                  </span>
+                </Link>
+              </div>
+              <div className="flex-1" />
+            </div>
+
+            <div className="space-y-0 pt-2">
+              <details className="group">
+                <summary
+                  className="nav-item flex cursor-pointer list-none items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-300 transition hover:border-white/40 [&::-webkit-details-marker]:hidden"
+                  title="Contact"
+                >
+                  <MessageCircle className="h-5 w-5" aria-hidden />
+                  <span className="nav-label pointer-events-none max-w-0 overflow-hidden opacity-0 translate-x-2 transition-all">
+                    Contact
+                  </span>
+                </summary>
+                <div className="contact-menu max-h-0 overflow-hidden rounded-2xl border border-white/10 bg-[#050f22] p-0 text-xs text-slate-300 opacity-0 pointer-events-none transition group-open:mt-3 group-open:max-h-56 group-open:p-3 group-open:opacity-100 group-open:pointer-events-auto">
+                  <Link
+                    href="https://wa.me/"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center justify-between rounded-xl border border-white/10 px-3 py-2 transition hover:border-white/40"
+                  >
+                    WhatsApp
+                    <span className="text-[10px] uppercase tracking-[0.3em] text-slate-500">WA</span>
+                  </Link>
+                  <Link
+                    href="mailto:hello@chessviewlive.com"
+                    className="flex items-center justify-between rounded-xl border border-white/10 px-3 py-2 transition hover:border-white/40"
+                  >
+                    Email
+                    <span className="text-[10px] uppercase tracking-[0.3em] text-slate-500">EM</span>
+                  </Link>
+                  <Link
+                    href="#"
+                    className="flex items-center justify-between rounded-xl border border-white/10 px-3 py-2 transition hover:border-white/40"
+                  >
+                    DM
+                    <span className="text-[10px] uppercase tracking-[0.3em] text-slate-500">DM</span>
+                  </Link>
+                </div>
+              </details>
+
+              <div className="install-card-outer">
+                <InstallAppCard markSrc="/brand/logo-mark.png" />
+              </div>
+
+              <Link
+                href="/organizers"
+                className="nav-item flex items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-300 transition hover:border-white/40 hover:text-white"
+                title="Organizers"
+              >
+                <Users className="h-5 w-5" aria-hidden />
+                <span className="nav-label pointer-events-none max-w-0 overflow-hidden opacity-0 translate-x-2 transition-all">
+                  Organizers
+                </span>
+              </Link>
+            </div>
+          </div>
+        </aside>
+
+        <main className="flex-1 min-h-screen px-4 py-4 lg:px-8">
+          <div className="mx-auto grid w-full max-w-[1440px] gap-4">
+            <section className="flex min-h-0 h-[calc(60dvh-0.6rem)] flex-col">
+              <div className="flex min-h-0 flex-1 overflow-hidden rounded-3xl border border-white/10 bg-slate-950/70 shadow-xl ring-1 ring-white/5">
+                {featuredViewerParams ? (
+                  featuredSelection?.mode === "replay" ? (
+                    <ReplayBoardPage
+                      params={Promise.resolve(featuredViewerParams)}
+                      viewerDensity="compact"
+                      viewerVariant="mini"
+                    />
+                  ) : (
+                    <LiveViewer
+                      boardId={featuredViewerParams.boardId}
+                      tournamentId={featuredViewerParams.tournamentId}
+                      density="compact"
+                      variant="mini"
+                    />
+                  )
+                ) : (
+                  <div className="flex h-full items-center justify-center px-6 text-center">
+                    <p className="text-sm text-slate-300">No featured broadcast available yet.</p>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-950/60 p-4">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <form method="get" action="/" className="flex items-center gap-2">
+                  {activeFilter !== "all" ? (
+                    <input type="hidden" name="filter" value={activeFilter} />
+                  ) : null}
+                  <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5">
+                    <Search className="h-4 w-4 text-slate-400" aria-hidden />
+                    <input
+                      id="tournament-search"
+                      name="q"
+                      defaultValue={queryParam ?? ""}
+                      placeholder="Search tournaments"
+                      className="w-40 bg-transparent text-xs text-white placeholder:text-slate-500 outline-none"
+                    />
+                  </div>
+                </form>
+              </div>
+
+              <div className="mt-1 flex-1 min-h-0">
+                <div className="relative">
+                  <div className="lg:pr-1">
+                    <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      {filteredSummaries.length > 0 ? (
+                        filteredSummaries.map(summary => {
+                          const roundLabel = summary.roundLabel ?? `Round ${summary.round}`;
+                          const startsAt = summary.startsAt ? new Date(summary.startsAt) : null;
+                          const hasValidStart =
+                            startsAt && Number.isFinite(startsAt.getTime()) ? startsAt : null;
+                          const timeLabel = hasValidStart
+                            ? hasValidStart.getTime() > Date.now()
+                              ? `Starts ${formatRelativeTime(hasValidStart)}`
+                              : formatRelativeTime(hasValidStart)
+                            : null;
+                          const playerLine = summary.topPlayers?.length
+                            ? summary.topPlayers
+                                .map(player => `${player.name} ${player.rating}`)
+                                .join(", ")
+                            : null;
+
+                          const placeholderFlag = summary.placeholderFlag ?? "\uD83C\uDFC6";
+
+                          return (
+                            <article
+                              key={summary.slug}
+                              className="flex h-full min-h-[176px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#050f22] shadow-[0_18px_40px_rgba(2,8,23,0.45)]"
+                            >
+                              <div className="relative aspect-[16/6] w-full overflow-hidden bg-gradient-to-br from-slate-900 via-slate-950 to-black">
+                                {summary.heroImage ? (
+                                  <TournamentHeroImage
+                                    src={summary.heroImage}
+                                    alt={`${summary.name} banner`}
+                                    sizes="(min-width: 1280px) 320px, (min-width: 640px) 45vw, 100vw"
+                                    className="object-cover"
+                                    priority={summary.slug === DEFAULT_TOURNAMENT_SLUG}
+                                  />
+                                ) : (
+                                  <>
+                                    <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-950 to-black" />
+                                    <div className="relative flex h-full w-full items-center justify-center">
+                                      <span className="text-5xl drop-shadow-[0_12px_24px_rgba(2,6,23,0.5)]">
+                                        {placeholderFlag}
+                                      </span>
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                              <div className="flex flex-1 flex-col p-2">
+                                <div className="flex items-center justify-between gap-3 text-[11px] font-medium text-slate-400">
+                                  <span className="tracking-[0.08em] text-slate-400">
+                                    {roundLabel}
+                                  </span>
+                                  {timeLabel ? (
+                                    <span className="text-slate-500">{timeLabel}</span>
+                                  ) : null}
+                                </div>
+                                <h3 className="mt-1 text-base font-semibold text-white truncate">
+                                  <Link
+                                    href={`/t/${encodeURIComponent(summary.slug)}`}
+                                    className="transition hover:text-white/90"
+                                  >
+                                    {summary.name}
+                                  </Link>
+                                </h3>
+                                {playerLine ? (
+                                  <p className="mt-1 text-[11px] text-slate-400 truncate">
+                                    {playerLine}
+                                  </p>
+                                ) : null}
+                              </div>
+                            </article>
+                          );
+                        })
+                      ) : (
+                        <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-sm text-slate-300 sm:col-span-2 xl:col-span-3">
+                          No tournaments match this filter yet.
                         </div>
-                        <p className="text-sm text-slate-400">Next round in 4h • Top players: A, B, C</p>
-                        <div className="flex flex-wrap gap-2 text-xs text-slate-300">
-                          <Link
-                            href={`/t/sample-${i + 1}`}
-                            className="rounded-full border border-white/15 px-3 py-1 transition hover:border-white/60"
-                          >
-                            Hub
-                          </Link>
-                          <Link
-                            href={`/t/sample-${i + 1}/live/1`}
-                            className="rounded-full border border-emerald-400/60 px-3 py-1 text-emerald-200 transition hover:border-emerald-200"
-                          >
-                            Live
-                          </Link>
-                          <Link
-                            href={`/t/sample-${i + 1}/replay/1`}
-                            className="rounded-full border border-white/15 px-3 py-1 transition hover:border-white/60"
-                          >
-                            Replay
-                          </Link>
-                          <Link
-                            href={`/t/sample-${i + 1}/organizer/1`}
-                            className="rounded-full border border-white/15 px-3 py-1 transition hover:border-white/60"
-                          >
-                            Organizer
-                          </Link>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </section>
           </div>
-        </div>
+        </main>
       </div>
-    </>
+    </div>
   );
 }

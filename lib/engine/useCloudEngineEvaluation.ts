@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CURRENT_ENGINE_CONFIG,
   DEFAULT_ENGINE_PROFILE_ID,
+  ENGINE_DISPLAY_NAME,
   type CloudEngineLine,
   type CloudEngineRequest,
   type CloudEngineResponse,
@@ -13,7 +14,12 @@ import {
   getEngineProfileConfig,
   isEngineProfileId,
 } from "./config";
-import { getSavedEngineProfileId, saveEngineProfileId } from "./persistence";
+import {
+  getSavedEngineMultiPv,
+  getSavedEngineProfileId,
+  saveEngineMultiPv,
+  saveEngineProfileId,
+} from "./persistence";
 import type { StockfishEval, StockfishLine } from "./useStockfishEvaluation";
 
 type UseCloudEngineEvaluationOptions = {
@@ -22,16 +28,24 @@ type UseCloudEngineEvaluationOptions = {
   depthIndex?: number;
   profileId?: EngineProfileId;
   targetDepth?: number;
+  debounceMs?: number;
 };
 
 const ENGINE_CONFIG = CURRENT_ENGINE_CONFIG;
 const DEFAULT_PROFILE_CONFIG = getEngineProfileConfig(DEFAULT_ENGINE_PROFILE_ID);
-const CLOUD_ENGINE_NAME =
-  (ENGINE_CONFIG.backends?.cloud as { engineName?: string } | undefined)?.engineName ?? "Stockfish (cloud)";
+const CLOUD_ENGINE_NAME = ENGINE_DISPLAY_NAME;
 const ENGINE_BACKEND: EngineBackend = "cloud";
+const DEBUG_ENGINE = process.env.NODE_ENV === "development";
+
+const getFenHash = (fen: string | null) => {
+  if (typeof fen !== "string") return "--";
+  const trimmed = fen.trim();
+  if (!trimmed) return "--";
+  return trimmed.slice(0, 12);
+};
 
 const clampLineCount = (value?: number | null) => {
-  const fallback = ENGINE_CONFIG.defaults?.multiPv ?? DEFAULT_PROFILE_CONFIG.multiPv ?? 1;
+  const fallback = 1;
   const normalized = typeof value === "number" && Number.isFinite(value) ? value : fallback;
   return Math.max(1, Math.min(3, Math.round(normalized)));
 };
@@ -52,11 +66,19 @@ const resolveDepthSteps = (profile: EngineProfileConfig): number[] => {
 };
 
 const mapCloudLineToStockfishLine = (line: CloudEngineLine): StockfishLine => {
-  const multipv = Number.isFinite(line?.multipv) ? Number(line.multipv) : 1;
-  const cp = Number.isFinite(line?.scoreCp ?? NaN) ? Number(line.scoreCp) : undefined;
-  const mate = Number.isFinite(line?.scoreMate ?? NaN) ? Number(line.scoreMate) : undefined;
-  const depth = Number.isFinite(line?.depth ?? NaN) ? Number(line.depth) : undefined;
-  const pv = Array.isArray(line?.pvMoves) ? line.pvMoves.join(" ") : "";
+  const multipvRaw = Number(line?.multipv);
+  const multipv = Number.isFinite(multipvRaw) ? multipvRaw : 1;
+  const cpRaw = Number((line as { scoreCp?: number | string }).scoreCp);
+  const cp = Number.isFinite(cpRaw) ? cpRaw : undefined;
+  const mateRaw = Number((line as { scoreMate?: number | string }).scoreMate);
+  const mate = Number.isFinite(mateRaw) ? mateRaw : undefined;
+  const depthRaw = Number(line?.depth);
+  const depth = Number.isFinite(depthRaw) ? depthRaw : undefined;
+  const pv = Array.isArray(line?.pvMoves)
+    ? line.pvMoves.join(" ")
+    : typeof (line as { pv?: string }).pv === "string"
+      ? (line as { pv?: string }).pv.trim()
+      : "";
 
   return { multipv, cp, mate, depth, pv };
 };
@@ -64,8 +86,10 @@ const mapCloudLineToStockfishLine = (line: CloudEngineLine): StockfishLine => {
 const deriveEvalFromCloudLines = (lines: CloudEngineLine[]): StockfishEval => {
   if (!Array.isArray(lines) || !lines.length) return null;
   const [primary] = lines;
-  if (typeof primary?.scoreMate === "number") return { mate: primary.scoreMate };
-  if (typeof primary?.scoreCp === "number") return { cp: primary.scoreCp };
+  const mateRaw = Number((primary as { scoreMate?: number | string }).scoreMate);
+  if (Number.isFinite(mateRaw)) return { mate: mateRaw };
+  const cpRaw = Number((primary as { scoreCp?: number | string }).scoreCp);
+  if (Number.isFinite(cpRaw)) return { cp: cpRaw };
   return null;
 };
 
@@ -87,16 +111,20 @@ export default function useCloudEngineEvaluation(
     clampDepthIndex(options.depthIndex ?? initialProfileConfig.defaultDepthIndex, initialDepthSteps)
   );
   const [multiPv, setMultiPvState] = useState<number>(() =>
-    clampLineCount(options.multiPv ?? initialProfileConfig.multiPv)
+    clampLineCount(options.multiPv ?? getSavedEngineMultiPv() ?? initialProfileConfig.multiPv ?? 1)
   );
   const [evalResult, setEvalResult] = useState<StockfishEval>(null);
   const [bestLines, setBestLines] = useState<StockfishLine[]>([]);
   const [isEvaluating, setIsEvaluating] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [engineName, setEngineName] = useState<string | undefined>(CLOUD_ENGINE_NAME);
+  const [evaluatedFen, setEvaluatedFen] = useState<string | null>(null);
   const requestIdRef = useRef<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastFenRef = useRef<string | null>(null);
+  const lastRequestKeyRef = useRef<string | null>(null);
+  const inflightKeyRef = useRef<string | null>(null);
+  const debounceTimeoutRef = useRef<number | null>(null);
 
   const activeProfileConfig = useMemo(
     () => getEngineProfileConfig(activeProfileId),
@@ -118,12 +146,15 @@ export default function useCloudEngineEvaluation(
       const profileSteps = resolveDepthSteps(profile);
       setActiveProfileIdState(profile.id);
       setDepthIndexState(clampDepthIndex(profile.defaultDepthIndex, profileSteps));
-      setMultiPvState(clampLineCount(profile.multiPv));
     }
   }, [activeProfileId, options.profileId]);
 
   useEffect(() => {
     if (!enabled || !fen) {
+      if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
       abortControllerRef.current?.abort();
       abortControllerRef.current = null;
       setIsEvaluating(false);
@@ -132,35 +163,59 @@ export default function useCloudEngineEvaluation(
       return;
     }
 
-    const isNewPosition = fen !== lastFenRef.current;
-    if (isNewPosition) {
-      setEvalResult(null);
-      setBestLines([]);
+    const normalizedFen = typeof fen === "string" ? fen.trim() : "";
+    if (!normalizedFen) return;
+    lastFenRef.current = normalizedFen;
+
+    const requestKey = [
+      normalizedFen,
+      activeProfileId,
+      effectiveMultiPv,
+      Number.isFinite(targetDepth) ? Math.round(Number(targetDepth)) : "depth:auto",
+      activeProfileConfig.movetimeMs ?? ENGINE_CONFIG.defaults?.movetimeMs ?? "movetime:auto",
+      activeProfileConfig.threads ?? ENGINE_CONFIG.defaults?.threads ?? "threads:auto",
+      activeProfileConfig.hashMb ?? ENGINE_CONFIG.defaults?.hashMb ?? "hash:auto",
+      activeProfileConfig.skillLevel ?? "skill:auto",
+    ].join("|");
+
+    if (lastRequestKeyRef.current === requestKey || inflightKeyRef.current === requestKey) {
+      return;
     }
-    lastFenRef.current = fen;
 
-    abortControllerRef.current?.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    requestIdRef.current = requestId;
-    setIsEvaluating(true);
-    setLastError(null);
+    if (debounceTimeoutRef.current) {
+      window.clearTimeout(debounceTimeoutRef.current);
+      debounceTimeoutRef.current = null;
+    }
 
-    const payload: CloudEngineRequest = {
-      fen,
-      movetimeMs: activeProfileConfig.movetimeMs ?? ENGINE_CONFIG.defaults?.movetimeMs,
-      multiPv: effectiveMultiPv,
-      requestId,
-      searchMode: "depth",
-      targetDepth: Number.isFinite(targetDepth) ? Math.max(1, Math.round(Number(targetDepth))) : undefined,
-      threads: activeProfileConfig.threads ?? ENGINE_CONFIG.defaults?.threads,
-      hashMb: activeProfileConfig.hashMb ?? ENGINE_CONFIG.defaults?.hashMb,
-      skillLevel: activeProfileConfig.skillLevel,
-      profileId: activeProfileId,
-    };
+    const startRequest = () => {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      requestIdRef.current = requestId;
+      inflightKeyRef.current = requestKey;
+      const fenHash = getFenHash(normalizedFen);
+      if (DEBUG_ENGINE) {
+        console.log("[engine] request start", { requestId, fenHash });
+      }
+      setIsEvaluating(true);
+      setLastError(null);
 
-    const run = async () => {
+      const payload: CloudEngineRequest = {
+        fen: normalizedFen,
+        movetimeMs: activeProfileConfig.movetimeMs ?? ENGINE_CONFIG.defaults?.movetimeMs,
+        multiPv: effectiveMultiPv,
+        requestId,
+        searchMode: "depth",
+        targetDepth: Number.isFinite(targetDepth) ? Math.max(1, Math.round(Number(targetDepth))) : undefined,
+        threads: activeProfileConfig.threads ?? ENGINE_CONFIG.defaults?.threads,
+        hashMb: activeProfileConfig.hashMb ?? ENGINE_CONFIG.defaults?.hashMb,
+        skillLevel: activeProfileConfig.skillLevel,
+        profileId: activeProfileId,
+      };
+
+      const currentRequestKey = requestKey;
+      const run = async () => {
       try {
         const response = await fetch("/api/engine/eval", {
           method: "POST",
@@ -175,25 +230,71 @@ export default function useCloudEngineEvaluation(
           );
         }
         const json = (await response.json()) as CloudEngineResponse;
-        if (controller.signal.aborted || requestIdRef.current !== requestId) return;
+        if (controller.signal.aborted || requestIdRef.current !== requestId) {
+          if (DEBUG_ENGINE) {
+            console.log("[engine] ignored stale response", {
+              requestId,
+              fenHash,
+              reason: controller.signal.aborted ? "aborted" : "superseded",
+            });
+          }
+          return;
+        }
         const lines = Array.isArray(json.lines) ? json.lines : [];
         const mappedLines = lines.map(mapCloudLineToStockfishLine).sort((a, b) => a.multipv - b.multipv);
-        setEngineName(json.engineName ?? CLOUD_ENGINE_NAME);
-        setEvalResult(deriveEvalFromCloudLines(lines));
+        const nextEval = deriveEvalFromCloudLines(lines);
+        if (DEBUG_ENGINE) {
+          const scoreLabel =
+            typeof nextEval?.mate === "number"
+              ? `M${nextEval.mate}`
+              : typeof nextEval?.cp === "number"
+                ? `${Math.round(nextEval.cp)}`
+                : "--";
+          console.log("[engine] response", { requestId, fenHash, score: scoreLabel });
+        }
+        setEngineName(CLOUD_ENGINE_NAME);
+        setEvalResult(nextEval);
         setBestLines(mappedLines);
+        setEvaluatedFen(normalizedFen);
         setIsEvaluating(false);
         requestIdRef.current = null;
+        lastRequestKeyRef.current = currentRequestKey;
       } catch (error) {
-        if (controller.signal.aborted || requestIdRef.current !== requestId) return;
+        if (controller.signal.aborted || requestIdRef.current !== requestId) {
+          if (DEBUG_ENGINE) {
+            console.log("[engine] ignored stale response", {
+              requestId,
+              fenHash,
+              reason: controller.signal.aborted ? "aborted" : "superseded",
+            });
+          }
+          return;
+        }
         setIsEvaluating(false);
         setLastError(error instanceof Error ? error.message : String(error ?? "Unknown error"));
+      } finally {
+        if (inflightKeyRef.current === currentRequestKey) {
+          inflightKeyRef.current = null;
+        }
       }
     };
 
-    run();
+      run();
+    };
+
+    const debounceMs = Number.isFinite(options.debounceMs ?? NaN) ? Math.max(0, Math.round(options.debounceMs as number)) : 0;
+    if (debounceMs > 0) {
+      debounceTimeoutRef.current = window.setTimeout(startRequest, debounceMs);
+    } else {
+      startRequest();
+    }
 
     return () => {
-      controller.abort();
+      if (debounceTimeoutRef.current) {
+        window.clearTimeout(debounceTimeoutRef.current);
+        debounceTimeoutRef.current = null;
+      }
+      abortControllerRef.current?.abort();
     };
   }, [
     activeProfileConfig.hashMb,
@@ -207,6 +308,7 @@ export default function useCloudEngineEvaluation(
     enabled,
     fen,
     targetDepth,
+    options.debounceMs,
   ]);
 
   const setActiveProfileId = (next: EngineProfileId) => {
@@ -215,7 +317,6 @@ export default function useCloudEngineEvaluation(
     const profileSteps = resolveDepthSteps(profile);
     setActiveProfileIdState(profile.id);
     setDepthIndexState(clampDepthIndex(profile.defaultDepthIndex, profileSteps));
-    setMultiPvState(clampLineCount(profile.multiPv));
     saveEngineProfileId(profile.id);
   };
 
@@ -224,13 +325,17 @@ export default function useCloudEngineEvaluation(
   };
 
   const setMultiPv = (value: number) => {
-    setMultiPvState(clampLineCount(value));
+    const next = clampLineCount(value);
+    setMultiPvState(next);
+    saveEngineMultiPv(next);
   };
 
   return {
     eval: evalResult,
     bestLines,
     isEvaluating,
+    isUpdating: Boolean(enabled && fen && isEvaluating && evaluatedFen !== fen),
+    evaluatedFen,
     engineName,
     engineBackend: ENGINE_BACKEND,
     setEngineBackend: undefined,

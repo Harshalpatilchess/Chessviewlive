@@ -86,11 +86,9 @@ export function pgnToDgtBoard(pgn: string, options: PgnToDgtOptions = {}): DgtBo
   let finalFen: string | null = null;
 
   try {
-    const loaded = chess.loadPgn(pgn, { sloppy: true });
-    if (loaded) {
-      moveList = chess.history();
-      finalFen = chess.fen();
-    }
+    chess.loadPgn(pgn, { strict: false });
+    moveList = chess.history();
+    finalFen = chess.fen();
   } catch {
     moveList = [];
     finalFen = null;

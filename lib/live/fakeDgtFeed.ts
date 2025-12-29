@@ -5,7 +5,7 @@ import { pgnToDgtBoard } from "@/lib/live/pgnToDgtPayload";
 import { samplePgns } from "@/lib/live/samplePgns";
 
 const fakeDgtFeed: DgtLivePayload = {
-  tournamentSlug: "worldcup",
+  tournamentSlug: "worldcup2025",
   round: 1,
   boards: [
     {
