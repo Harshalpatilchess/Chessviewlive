@@ -4,6 +4,8 @@ type EvalBarProps = {
   advantage?: "white" | "black" | "equal";
   orientation?: "white" | "black";
   size?: "default" | "compact" | "mini";
+  showLabel?: boolean;
+  tone?: "active" | "idle";
 };
 
 const clamp = (val: number) => Math.min(100, Math.max(0, val));
@@ -14,9 +16,12 @@ const EvalBar = ({
   advantage,
   orientation = "white",
   size = "default",
+  showLabel = true,
+  tone = "active",
 }: EvalBarProps) => {
   const percent = clamp(value);
   const rawLabel = scoreLabel ?? "0.0";
+  const isPlaceholder = rawLabel === "—";
   const effectiveAdvantage =
     advantage ??
     (percent > 50 ? "white" : percent < 50 ? "black" : "equal");
@@ -40,30 +45,36 @@ const EvalBar = ({
   const labelClass = `pointer-events-none absolute left-1/2 -translate-x-1/2 transform select-none ${labelSizeClass} font-semibold leading-tight text-slate-50 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] bg-black/25 px-1 rounded-sm backdrop-blur-[1px]`;
   const normalizedLabel =
     effectiveAdvantage === "black" ? rawLabel.replace(/^-/, "") : rawLabel;
-  const displayLabel = effectiveAdvantage === "equal" ? "0.0" : normalizedLabel;
+  const displayLabel = isPlaceholder ? rawLabel : effectiveAdvantage === "equal" ? "0.0" : normalizedLabel;
+  const railClass = "bg-slate-800/70";
+  const midlineClass = "bg-amber-300/70";
+  const fillClass = "bg-emerald-400";
+  const toneClass = tone === "idle" ? "opacity-60 saturate-50" : "";
 
   return (
-    <div className={`relative flex h-full ${widthClass} items-stretch overflow-hidden rounded-full bg-slate-800/70`}>
-      <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-amber-300/70" />
+    <div className={`relative flex h-full ${widthClass} items-stretch overflow-hidden rounded-full ${railClass} ${toneClass}`}>
+      <div className={`pointer-events-none absolute inset-x-0 top-1/2 h-px ${midlineClass}`} />
       <div
-        className="mt-auto h-full w-full rounded-full bg-emerald-400"
+        className={`mt-auto h-full w-full rounded-full transition-[height] duration-300 ease-out ${fillClass}`}
         style={{ height: `${percent}%` }}
         aria-label={displayLabel}
       />
-      {effectiveAdvantage === "equal" ? (
-        <>
-          <span className={`${labelClass} ${whitePosition}`} aria-hidden="true">
+      {showLabel ? (
+        effectiveAdvantage === "equal" ? (
+          <>
+            <span className={`${labelClass} ${whitePosition}`} aria-hidden="true">
+              {displayLabel}
+            </span>
+            <span className={`${labelClass} ${blackPosition}`} aria-hidden="true">
+              {displayLabel}
+            </span>
+          </>
+        ) : (
+          <span className={`${labelClass} ${positionClass}`} aria-hidden="true">
             {displayLabel}
           </span>
-          <span className={`${labelClass} ${blackPosition}`} aria-hidden="true">
-            {displayLabel}
-          </span>
-        </>
-      ) : (
-        <span className={`${labelClass} ${positionClass}`} aria-hidden="true">
-          {displayLabel}
-        </span>
-      )}
+        )
+      ) : null}
     </div>
   );
 };

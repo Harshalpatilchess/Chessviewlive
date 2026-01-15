@@ -19,10 +19,7 @@ export default function TournamentBoardsNavigation({
       boards={boards}
       compact={compact}
       paneQuery="notation"
-      hrefBuilder={(board, { paneQuery, isFinished }) =>
-        `/t/${encodeURIComponent(tournamentSlug)}/${isFinished ? "replay" : "live"}/${encodeURIComponent(board.boardId)}?pane=${encodeURIComponent(paneQuery)}`
-      }
+      tournamentSlug={tournamentSlug}
     />
   );
 }
-

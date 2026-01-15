@@ -5,6 +5,7 @@ import {
   normalizeBoardIdentifier,
   normalizeTournamentSlug,
 } from "@/lib/boardId";
+import { getBroadcastTournament } from "@/lib/broadcasts/catalog";
 
 export type FideTitle = "GM" | "IM" | "FM" | "CM" | "WGM" | "WIM" | "WFM" | "WCM" | null;
 
@@ -14,6 +15,7 @@ export type GameStatus = "live" | "final" | "scheduled" | "unknown";
 
 export type TournamentGame = {
   tournamentSlug?: string;
+  boardId?: string;
   round: number;
   board: number;
   white: string;
@@ -31,7 +33,9 @@ export type TournamentGame = {
   evaluation?: number | null;
   whiteTimeMs?: number | null;
   blackTimeMs?: number | null;
+  clockUpdatedAtMs?: number | null;
   sideToMove?: "white" | "black" | null;
+  previewFen?: string | null;
   finalFen?: string | null;
   moveList?: string[] | null;
 };
@@ -40,14 +44,23 @@ export type TournamentGameLiveUpdate = {
   tournamentSlug: string;
   round: number;
   board: number;
+  white?: string | null;
+  black?: string | null;
   result?: GameResult;
   status?: GameStatus;
   evaluation?: number | null;
   whiteTimeMs?: number | null;
   blackTimeMs?: number | null;
+  clockUpdatedAtMs?: number | null;
   sideToMove?: "white" | "black" | null;
+  previewFen?: string | null;
   finalFen?: string | null;
   moveList?: string[] | null;
+};
+
+export type TournamentRoundEntry = {
+  board: number;
+  game: TournamentGame;
 };
 
 export type TournamentSlug = string;
@@ -70,7 +83,26 @@ export type FeaturedBroadcastSelectionInput = {
   currentTournamentOrder?: string[];
 };
 
-const worldCupRound1: TournamentRoundManifest = {
+const addBoardIds = (
+  tournamentSlug: string,
+  round: number,
+  roundManifest: TournamentRoundManifest
+): TournamentRoundManifest => {
+  const enriched: TournamentRoundManifest = {};
+  Object.keys(roundManifest).forEach(boardKey => {
+    const boardNumber = Number(boardKey);
+    if (!Number.isFinite(boardNumber)) return;
+    const game = roundManifest[boardNumber];
+    if (!game) return;
+    enriched[boardNumber] = {
+      ...game,
+      boardId: buildBoardIdentifier(tournamentSlug, round, boardNumber),
+    };
+  });
+  return enriched;
+};
+
+const worldCupRound1Seed: TournamentRoundManifest = {
   1: {
     tournamentSlug: "worldcup2025",
     round: 1,
@@ -413,6 +445,8 @@ const worldCupRound1: TournamentRoundManifest = {
   },
 };
 
+const worldCupRound1 = addBoardIds("worldcup2025", 1, worldCupRound1Seed);
+
 const manifests: TournamentManifests = {
   worldcup2025: {
     1: worldCupRound1,
@@ -718,6 +752,16 @@ export function getTournamentGameManifest(
   return roundManifest[safeBoard] ?? null;
 }
 
+export function getTournamentRounds(tournamentSlug?: string | null): number[] {
+  const normalized = normalizeTournamentSlug(tournamentSlug ?? DEFAULT_TOURNAMENT_SLUG);
+  const manifest = manifests[normalized];
+  if (!manifest) return [];
+  return Object.keys(manifest)
+    .map(key => Number(key))
+    .filter(round => Number.isFinite(round))
+    .sort((a, b) => a - b);
+}
+
 export function getTournamentBoardsForRound(
   tournamentSlug?: string | null,
   round?: number
@@ -737,6 +781,29 @@ export function getTournamentBoardsForRound(
   return boardNumbers.length > 0 ? boardNumbers : null;
 }
 
+export function getTournamentRoundEntries(
+  tournamentSlug?: string | null,
+  round?: number
+): TournamentRoundEntry[] {
+  const slug = normalizeSlug(tournamentSlug);
+  const isValidRound = typeof round === "number" && Number.isFinite(round);
+  if (!slug || !isValidRound) return [];
+  const safeRound = Math.floor(round);
+  const manifest = manifests[slug];
+  if (!manifest) return [];
+  const roundManifest = manifest[safeRound];
+  if (!roundManifest) return [];
+  return Object.keys(roundManifest)
+    .map(key => Number(key))
+    .filter(board => Number.isFinite(board))
+    .sort((a, b) => a - b)
+    .map(board => {
+      const game = roundManifest[board];
+      return game ? { board, game } : null;
+    })
+    .filter((entry): entry is TournamentRoundEntry => entry !== null);
+}
+
 export function applyTournamentLiveUpdates(updates: TournamentGameLiveUpdate[]): number {
   if (!Array.isArray(updates) || updates.length === 0) return 0;
   let applied = 0;
@@ -751,15 +818,45 @@ export function applyTournamentLiveUpdates(updates: TournamentGameLiveUpdate[]):
     if (!manifests[slug]) manifests[slug] = {};
     if (!manifests[slug][safeRound]) manifests[slug][safeRound] = {};
     const existing = manifests[slug][safeRound][safeBoard];
-    if (!existing) return;
+    if (!existing) {
+      if (!getBroadcastTournament(slug)) return;
+      manifests[slug][safeRound][safeBoard] = {
+        tournamentSlug: slug,
+        round: safeRound,
+        board: safeBoard,
+        white: "",
+        whiteRating: 0,
+        whiteCountry: "",
+        whiteFlag: "",
+        black: "",
+        blackRating: 0,
+        blackCountry: "",
+        blackFlag: "",
+      };
+    }
+    const base = manifests[slug][safeRound][safeBoard];
+    const nextWhite = typeof update.white === "string" && update.white.trim() ? update.white.trim() : null;
+    const nextBlack = typeof update.black === "string" && update.black.trim() ? update.black.trim() : null;
+    const hasClockUpdate =
+      Number.isFinite(update.whiteTimeMs ?? NaN) || Number.isFinite(update.blackTimeMs ?? NaN);
+    const hasClockTimestamp = Number.isFinite(update.clockUpdatedAtMs ?? NaN);
+    const nextClockUpdatedAtMs = hasClockTimestamp
+      ? Math.floor(update.clockUpdatedAtMs as number)
+      : hasClockUpdate
+        ? Date.now()
+        : null;
     manifests[slug][safeRound][safeBoard] = {
-      ...existing,
+      ...base,
+      ...(nextWhite ? { white: nextWhite } : {}),
+      ...(nextBlack ? { black: nextBlack } : {}),
       ...("result" in update ? { result: update.result } : {}),
       ...("status" in update ? { status: update.status } : {}),
       ...("evaluation" in update ? { evaluation: update.evaluation } : {}),
       ...("whiteTimeMs" in update ? { whiteTimeMs: update.whiteTimeMs } : {}),
       ...("blackTimeMs" in update ? { blackTimeMs: update.blackTimeMs } : {}),
+      ...(hasClockTimestamp || hasClockUpdate ? { clockUpdatedAtMs: nextClockUpdatedAtMs } : {}),
       ...("sideToMove" in update ? { sideToMove: update.sideToMove } : {}),
+      ...("previewFen" in update ? { previewFen: update.previewFen } : {}),
       ...("finalFen" in update ? { finalFen: update.finalFen } : {}),
       ...("moveList" in update ? { moveList: update.moveList ?? null } : {}),
     };

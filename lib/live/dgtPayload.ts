@@ -1,11 +1,11 @@
-"use client";
-
 export type DgtBoardState = {
   board: number;
   fen?: string | null;
   moves?: string[];
   finalFen?: string | null;
   moveList?: string[];
+  pgn?: string | null;
+  fenSource?: string | null;
   event?: string | null;
   date?: string | null;
   white?: string | null;
@@ -17,8 +17,8 @@ export type DgtBoardState = {
   whiteTimeMs?: number | null;
   blackTimeMs?: number | null;
   sideToMove?: "white" | "black" | null;
-  status?: "live" | "finished" | "scheduled";
-  result?: "1-0" | "0-1" | "1/2-1/2" | "½-½" | null;
+  status?: "live" | "finished" | "scheduled" | "final";
+  result?: "1-0" | "0-1" | "1/2-1/2" | "½-½" | "*" | null;
 };
 
 export type DgtLivePayload = {

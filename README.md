@@ -57,6 +57,10 @@ You can start editing the page by modifying app/page.tsx. The page auto-updates 
 
 This project uses next/font to automatically optimize and load Geist, a new font family for Vercel.
 
+## Engine service (dev)
+- The local engine-service listens on `PORT` (default `4000`).
+- Set `CLOUD_ENGINE_URL=http://localhost:4000/engine/eval` in your Next.js env to proxy `/api/engine/eval`.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
@@ -94,6 +98,12 @@ Suggested defaults for the proxy cache (set as env vars on the Next.js app):
 - Dry-run example:
   `curl -H "x-admin-secret: $ADMIN_SECRET" "http://localhost:3000/api/dev/cleanup?boardId=7-1&olderThanDays=45"`
 - Provide `dryRun=0` when you actually want to delete old recordings; defaults to dry-run.
+
+## LiveChessCloud Probe (Dev-only)
+- Set `ALLOW_DEV_LCC_PROBE=true` in your environment (dev only).
+- Authenticate with an admin session or supply the header `x-admin-secret: $ADMIN_SECRET`.
+- Example request:
+  `curl -H "x-admin-secret: $ADMIN_SECRET" "http://localhost:3000/api/dev/lcc/probe?tournamentId=<TOURNAMENT_ID>&round=1&limit=32&debug=1"`
 
 ## License
 Proprietary prototype. Update when ready for public release.

@@ -169,6 +169,14 @@ const formatPlayerDisplayName = (name: string, maxLength: number) => {
   return { label: fallback, shouldTruncate: fallback.length > maxLength };
 };
 
+const resolvePlayerRatingLabel = (rating: number | string) => {
+  if (typeof rating === "number") {
+    return Number.isFinite(rating) ? String(rating) : null;
+  }
+  const trimmed = String(rating ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const parseClockLabelSeconds = (label?: string | null) => {
   if (!label) return null;
   const cleaned = label.trim();
@@ -389,8 +397,7 @@ export function ViewerShell({
       ? "relative flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-950/60 px-2.5 py-2 text-[10px] text-slate-200 sm:text-[11px]"
       : "relative flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2.5 text-[11px] text-slate-200 sm:text-xs";
   const playerLeftClusterClass = "flex min-w-0 flex-1 items-center gap-2.5";
-  const playerNameStackClass = "flex min-w-0 flex-1 flex-col gap-1.5";
-  const playerNameRowClass = "flex w-full min-w-0 items-center gap-2.5";
+  const playerNameRowClass = "flex min-w-0 items-center gap-2.5";
   const playerTitleClass = isCompact
     ? "rounded-full border border-amber-200/50 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-100"
     : "rounded-full border border-amber-200/50 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100";
@@ -398,11 +405,11 @@ export function ViewerShell({
     ? "text-sm font-semibold text-white sm:text-base"
     : "text-base font-semibold text-white sm:text-lg";
   const playerMetaClass = isCompact
-    ? "text-[9px] text-slate-500 sm:text-[10px]"
-    : "text-[10px] text-slate-500 sm:text-[11px]";
+    ? "text-[9px] text-slate-300 sm:text-[10px]"
+    : "text-[10px] text-slate-300 sm:text-[11px]";
   const playerCountryClass = isCompact
-    ? "text-[9px] uppercase tracking-wide text-slate-500 sm:text-[10px]"
-    : "text-[10px] uppercase tracking-wide text-slate-500 sm:text-[11px]";
+    ? "text-[9px] uppercase tracking-wide text-slate-300 sm:text-[10px]"
+    : "text-[10px] uppercase tracking-wide text-slate-300 sm:text-[11px]";
   const scorePillClass = isCompact
     ? "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-tight"
     : "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-tight";
@@ -453,28 +460,21 @@ export function ViewerShell({
           <span className="flex items-center justify-center text-base leading-none" aria-hidden>
             {player.flag}
           </span>
-          <div className={playerNameStackClass}>
-            <div className={playerNameRowClass}>
-              {player.title ? (
-                <span className={playerTitleClass}>
-                  {player.title}
-                </span>
-              ) : null}
-              <span
-                className={`${playerNameClass} min-w-0 flex-1 whitespace-nowrap ${
-                  shouldTruncate ? "truncate" : ""
-                }`}
-              >
-                {displayName}
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className={`${playerMetaClass} rating-text`}>{player.rating}</span>
-              <span className="text-slate-600" aria-hidden>
-                &middot;
-              </span>
-              <span className={`${playerCountryClass} rating-text`}>{player.countryCode}</span>
-            </div>
+          <div className={playerNameRowClass}>
+            {player.title ? <span className={playerTitleClass}>{player.title}</span> : null}
+            <span
+              className={`${playerNameClass} min-w-0 whitespace-nowrap ${
+                shouldTruncate ? "truncate" : ""
+              }`}
+            >
+              {displayName}
+            </span>
+            <span className={`${playerMetaClass} rating-text whitespace-nowrap shrink-0`}>
+              ({player.rating})
+            </span>
+            <span className={`${playerCountryClass} rating-text whitespace-nowrap shrink-0`}>
+              {player.countryCode}
+            </span>
           </div>
         </div>
         <div className={rightClusterClass}>
@@ -492,7 +492,7 @@ export function ViewerShell({
             ) : null}
             <span className={`${scorePillClass} ${scorePillClasses(points.variant)}`}>{points.score}</span>
           </div>
-          <div className={`${clockClass} ${clockUrgencyClass} relative`}>
+          <div className={`${clockClass} ${clockUrgencyClass} relative whitespace-nowrap`}>
             {player.clockLabel}
             {incrementLabel ? (
               <span className="pointer-events-none absolute left-full ml-1 text-[8px] font-semibold text-slate-400">
@@ -548,6 +548,7 @@ export function ViewerShell({
           whiteTimeMs: game.whiteTimeMs ?? 5 * 60 * 1000,
           blackTimeMs: game.blackTimeMs ?? 5 * 60 * 1000,
           sideToMove: game.sideToMove ?? "white",
+          previewFen: game.previewFen ?? null,
           finalFen: game.finalFen ?? null,
           moveList: game.moveList ?? null,
           evaluation: game.evaluation ?? null,
@@ -752,37 +753,22 @@ export function ViewerShell({
     : `${resolvedMediaContainerClass} relative flex-none`;
   const videoFooterClassName = isMini ? "flex-none pt-1" : "flex-none";
 
-  const headerNode = isMini ? (
+  const headerNode = (
     <header
-      className={`border border-white/10 bg-slate-900/70 ${
-        isCompact ? "rounded-xl px-3 py-2" : "rounded-2xl px-4 py-3"
-      }`}
-    >
-      <div className={`flex w-full flex-col ${isCompact ? "gap-2" : "gap-2.5"}`}>
-        <h2 className={`${isCompact ? "text-lg" : "text-xl"} font-semibold text-white`}>
-          {headerTitle}
-        </h2>
-        {headerControls ? <div className="w-full">{headerControls}</div> : null}
-      </div>
-    </header>
-  ) : (
-    <header
-      className={`flex flex-wrap items-center justify-between border border-white/10 bg-slate-900/70 ${
-        isMini ? "gap-2" : "gap-3"
-      } ${
+      className={`flex items-center justify-between border border-white/10 bg-slate-900/70 ${
         isCompact
           ? isMini
             ? "rounded-xl px-2.5 py-1.5"
             : "rounded-xl px-3 py-2"
-          : "rounded-2xl px-4 py-2.5"
+          : isMini
+            ? "rounded-2xl px-4 py-2.5"
+            : "rounded-2xl px-4 py-2.5"
       }`}
     >
-      <div>
-        <h2 className={`${isCompact ? "text-base" : "text-lg"} font-semibold text-white`}>
-          {headerTitle}
-        </h2>
-      </div>
-      {headerControls}
+      <h2 className={`${isCompact ? "text-base" : "text-lg"} font-semibold text-white`}>
+        {headerTitle}
+      </h2>
+      {headerControls ? <div className="flex items-center gap-2">{headerControls}</div> : null}
     </header>
   );
 

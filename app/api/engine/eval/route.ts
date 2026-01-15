@@ -14,11 +14,13 @@ const readNumberEnv = (key: string, fallback: number, min: number, max: number):
   return clampNumber(resolved, min, max);
 };
 
-const BACKEND_ID: CloudEngineResponse["backend"] = "cloud-nnue";
 const DEFAULT_DEV_ENGINE_URL = "http://localhost:4000/engine/eval";
 const FAST_DEPTH = 12;
 const REFINE_DEPTH_MIN = 20;
 const REFINE_DEPTH_MAX = 30;
+const LITE_MOVETIME_MS = readNumberEnv("ENGINE_LITE_MOVETIME_MS", 220, 80, 600);
+const LITE_THREADS = readNumberEnv("ENGINE_LITE_THREADS", 1, 1, 2);
+const LITE_HASH_MB = readNumberEnv("ENGINE_LITE_HASH_MB", 64, 16, 256);
 const DEBUG_ENGINE_LOGS = typeof process !== "undefined" && process.env.DEBUG_ENGINE_LOGS === "true";
 const FAST_MOVETIME_MS = (() => {
   const raw = typeof process !== "undefined" ? process.env.ENGINE_FAST_MOVETIME_MS : undefined;
@@ -36,13 +38,26 @@ type CacheEntry = {
   fetchedAt: number;
 };
 
+type EngineDebugMeta = {
+  source: "cache" | "upstream";
+  cacheHit: boolean;
+  upstreamOk: boolean;
+  upstreamStatus: number | "error";
+  engineHost?: string;
+};
+
+type UpstreamResult =
+  | { ok: true; payload: CloudEngineResponse; status: number }
+  | { ok: false; status: number | "error"; errorMessage: string };
+
 const evalCache = new Map<string, CacheEntry>();
-const inflightRequests = new Map<string, Promise<CloudEngineResponse>>();
+const inflightRequests = new Map<string, Promise<UpstreamResult>>();
 
 const normalizeFen = (fen: string) => fen.trim().split(/\s+/).join(" ");
 
-const buildCacheKey = (fen: string, payload: CloudEngineRequest, engineLabel: string) => {
+const buildCacheKey = (fen: string, payload: CloudEngineRequest, engineLabel: string, modeTag?: string) => {
   const normalizedFen = normalizeFen(fen);
+  const modeTagValue = modeTag ?? "standard";
   const mode = payload.searchMode ?? "time";
   const targetDepth = payload.targetDepth ?? "";
   const movetimeMs = payload.movetimeMs ?? "";
@@ -53,6 +68,7 @@ const buildCacheKey = (fen: string, payload: CloudEngineRequest, engineLabel: st
   return [
     `fen:${normalizedFen}`,
     `engine:${engineLabel}`,
+    `modeTag:${modeTagValue}`,
     `mode:${mode}`,
     `depth:${targetDepth}`,
     `movetime:${movetimeMs}`,
@@ -72,13 +88,24 @@ const hashCacheKey = (input: string) => {
   return Math.abs(hash).toString(36);
 };
 
-const withCacheHeaders = (payload: CloudEngineResponse, status: "HIT" | "MISS" | "DEDUP", keyHash: string) =>
-  NextResponse.json(payload, {
+const attachDebugMeta = (payload: CloudEngineResponse, meta?: EngineDebugMeta | null) =>
+  meta ? { ...payload, debug: meta } : payload;
+
+const withCacheHeaders = (
+  payload: CloudEngineResponse,
+  status: "HIT" | "MISS" | "DEDUP",
+  keyHash: string,
+  meta?: EngineDebugMeta | null
+) =>
+  NextResponse.json(attachDebugMeta(payload, meta), {
     headers: {
       "X-Engine-Cache": status,
       "X-Engine-Cache-Key": keyHash,
     },
   });
+
+const withErrorPayload = (message: string, status: number, meta?: EngineDebugMeta | null) =>
+  NextResponse.json(meta ? { error: message, debug: meta } : { error: message }, { status });
 
 const applyRequestId = (payload: CloudEngineResponse, requestId?: string | null) => {
   if (!requestId) return payload;
@@ -117,7 +144,60 @@ const resolveCloudEngineUrl = (rawUrl: string | undefined): string | null => {
   }
 };
 
+let warnedEngineUrlConfig = false;
+const warnEngineUrlIfNeeded = () => {
+  if (warnedEngineUrlConfig) return;
+  if (typeof process === "undefined" || process.env.NODE_ENV === "production") return;
+  const raw = typeof CLOUD_ENGINE_URL === "string" ? CLOUD_ENGINE_URL.trim() : "";
+  if (!raw) {
+    console.warn("[engine/eval] CLOUD_ENGINE_URL is not set; upstream engine calls will fail.");
+    warnedEngineUrlConfig = true;
+    return;
+  }
+  try {
+    const parsed = new URL(raw);
+    const hostname = parsed.hostname.toLowerCase();
+    const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0";
+    if (isLocalhost && !parsed.port) {
+      console.warn("[engine/eval] CLOUD_ENGINE_URL points to localhost without a port:", raw);
+      warnedEngineUrlConfig = true;
+      return;
+    }
+    if (!parsed.pathname || parsed.pathname === "/") {
+      console.warn("[engine/eval] CLOUD_ENGINE_URL path looks unexpected (missing /engine/eval):", raw);
+      warnedEngineUrlConfig = true;
+    }
+  } catch {
+    if (!raw.includes("://")) {
+      console.warn("[engine/eval] CLOUD_ENGINE_URL is not a valid URL (missing scheme?):", raw);
+      warnedEngineUrlConfig = true;
+    }
+  }
+};
+
+const resolveEngineHostLabel = (engineUrl: string | null): string | null => {
+  if (!engineUrl) return null;
+  try {
+    return new URL(engineUrl).hostname || null;
+  } catch {
+    const withoutScheme = engineUrl.replace(/^[a-z]+:\/\//i, "");
+    const hostPort = withoutScheme.split(/[/?#]/)[0] ?? "";
+    const hostOnly = hostPort.split("@").pop() ?? "";
+    const hostname = hostOnly.split(":")[0] ?? "";
+    return hostname || null;
+  }
+};
+
+const resolveUpstreamStatusCode = (status: number | "error") => (status === "error" ? 502 : status);
+
+warnEngineUrlIfNeeded();
+
 export async function POST(request: Request) {
+  const requestUrl = new URL(request.url);
+  const isLiteMode = requestUrl.searchParams.get("mode") === "lite";
+  const isExplicitDebug = requestUrl.searchParams.get("debug") === "1";
+  const isDevEnv = typeof process !== "undefined" && process.env.NODE_ENV !== "production";
+  const debugEnabled = isExplicitDebug || isDevEnv;
   let payload: CloudEngineRequest;
   try {
     payload = (await request.json()) as CloudEngineRequest;
@@ -188,7 +268,7 @@ export async function POST(request: Request) {
             5000
           )
       : undefined;
-  const forwardPayload: CloudEngineRequest = {
+  let forwardPayload: CloudEngineRequest = {
     fen,
     movetimeMs: forwardMovetimeMs,
     multiPv: safeMultiPv,
@@ -201,28 +281,92 @@ export async function POST(request: Request) {
     profileId,
   };
 
-  const cacheKey = buildCacheKey(fen, forwardPayload, ENGINE_DISPLAY_NAME);
+  if (isLiteMode) {
+    forwardPayload = {
+      fen,
+      requestId,
+      searchMode: "time",
+      movetimeMs: LITE_MOVETIME_MS,
+      multiPv: 1,
+      threads: LITE_THREADS,
+      hashMb: LITE_HASH_MB,
+      skillLevel,
+      profileId: "light",
+    };
+  }
+
+  const cacheKey = buildCacheKey(fen, forwardPayload, ENGINE_DISPLAY_NAME, isLiteMode ? "lite" : "standard");
   const cacheKeyHash = hashCacheKey(cacheKey);
   const now = Date.now();
+  const engineUrl = resolveCloudEngineUrl(CLOUD_ENGINE_URL);
+  const engineHostLabel = resolveEngineHostLabel(engineUrl);
+  const buildDebugMeta = (meta: Omit<EngineDebugMeta, "engineHost">): EngineDebugMeta | null => {
+    if (!debugEnabled) return null;
+    return {
+      ...meta,
+      engineHost: engineHostLabel ?? undefined,
+    };
+  };
   const cached = evalCache.get(cacheKey);
+  let cachedPayload: CloudEngineResponse | null = null;
   if (cached) {
     const age = now - cached.fetchedAt;
     if (age < MIN_REEVAL_MS || age < CACHE_TTL_MS) {
       touchCacheEntry(cacheKey, cached);
-      return withCacheHeaders(applyRequestId(cached.payload, requestId), "HIT", cacheKeyHash);
+      cachedPayload = cached.payload;
+      if (!debugEnabled) {
+        return withCacheHeaders(applyRequestId(cached.payload, requestId), "HIT", cacheKeyHash);
+      }
+    } else {
+      evalCache.delete(cacheKey);
     }
-    evalCache.delete(cacheKey);
   }
 
   const inflight = inflightRequests.get(cacheKey);
   if (inflight) {
-    const payload = await inflight;
-    return withCacheHeaders(applyRequestId(payload, requestId), "DEDUP", cacheKeyHash);
+    const result = await inflight;
+    if (result.ok) {
+      return withCacheHeaders(
+        applyRequestId(result.payload, requestId),
+        "DEDUP",
+        cacheKeyHash,
+        buildDebugMeta({
+          source: "upstream",
+          cacheHit: false,
+          upstreamOk: true,
+          upstreamStatus: result.status,
+        })
+      );
+    }
+    if (cachedPayload) {
+      return withCacheHeaders(
+        applyRequestId(cachedPayload, requestId),
+        "HIT",
+        cacheKeyHash,
+        buildDebugMeta({
+          source: "cache",
+          cacheHit: true,
+          upstreamOk: false,
+          upstreamStatus: result.status,
+        })
+      );
+    }
+    return withErrorPayload(
+      result.errorMessage,
+      resolveUpstreamStatusCode(result.status),
+      buildDebugMeta({
+        source: "upstream",
+        cacheHit: false,
+        upstreamOk: false,
+        upstreamStatus: result.status,
+      })
+    );
   }
 
-  const forwardToExternal = async (): Promise<CloudEngineResponse | null> => {
-    const engineUrl = resolveCloudEngineUrl(CLOUD_ENGINE_URL);
-    if (!engineUrl) return null;
+  const forwardToExternal = async (): Promise<UpstreamResult> => {
+    if (!engineUrl) {
+      return { ok: false, status: "error", errorMessage: "Cloud engine URL not configured" };
+    }
     try {
       const externalResponse = await fetch(engineUrl, {
         method: "POST",
@@ -231,13 +375,19 @@ export async function POST(request: Request) {
       });
       if (!externalResponse.ok) {
         const errorPayload = await externalResponse.json().catch(() => ({}));
-        throw new Error(
-          `External engine HTTP ${externalResponse.status}: ${errorPayload?.error ?? "Unknown error from external cloud backend"}`
-        );
+        const errorMessage =
+          errorPayload?.error ?? `External engine HTTP ${externalResponse.status}: Unknown error from external cloud backend`;
+        console.warn("[ENGINE CORE] (cloud api fallback) External call failed", {
+          requestId,
+          fenPreview: fen.slice(0, 60),
+          status: externalResponse.status,
+          error: errorMessage,
+        });
+        return { ok: false, status: externalResponse.status, errorMessage };
       }
       const externalJson = (await externalResponse.json()) as CloudEngineResponse;
       if (!externalJson || !Array.isArray(externalJson.lines)) {
-        throw new Error("External engine returned invalid payload");
+        return { ok: false, status: "error", errorMessage: "External engine returned invalid payload" };
       }
       if (DEBUG_ENGINE_LOGS) {
         console.log("[ENGINE CORE] (cloud api → external) Forwarded response", {
@@ -250,86 +400,76 @@ export async function POST(request: Request) {
           scoreCp: externalJson.lines[0]?.scoreCp,
         });
       }
-      return externalJson;
+      return { ok: true, payload: externalJson, status: externalResponse.status };
     } catch (error) {
       console.warn("[ENGINE CORE] (cloud api fallback) External call failed", {
         requestId,
         fenPreview: fen.slice(0, 60),
         error: error instanceof Error ? error.message : String(error ?? "Unknown error"),
       });
-      return null;
-    }
-  };
-
-  const runEvaluation = async (): Promise<CloudEngineResponse> => {
-    const forwarded = await forwardToExternal();
-    if (forwarded) {
-      return forwarded;
-    }
-    const sideToMove = fen.split(/\s+/)[1] === "b" ? "b" : "w";
-    const cpSign = sideToMove === "b" ? -1 : 1;
-    const pvCatalog: string[][] =
-      sideToMove === "w"
-        ? [
-            ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"],
-            ["d2d4", "d7d5", "c2c4", "c7c6", "g1f3"],
-            ["c2c4", "e7e6", "b1c3", "d7d5", "d2d4"],
-          ]
-        : [
-            ["e7e5", "g1f3", "b8c6", "f1c4", "g8f6"],
-            ["c7c5", "g1f3", "d7d6", "d2d4", "c5d4"],
-            ["e7e6", "d2d4", "d7d5", "c2c4", "g8f6"],
-          ];
-
-    const lines = Array.from({ length: safeMultiPv }, (_, idx) => {
-      const baseScore = Math.max(10, 34 - idx * 8);
-      const depth = 20 + idx % 3;
-      const selDepth = depth + 4;
-      const pvMoves = pvCatalog[idx] ?? pvCatalog[pvCatalog.length - 1];
       return {
-        multipv: idx + 1,
-        scoreCp: cpSign * baseScore,
-        depth,
-        selDepth,
-        pvMoves,
-        nodes: 1_000_000 + idx * 80_000,
-        nps: 1_400_000 + idx * 50_000,
-      } satisfies CloudEngineResponse["lines"][number];
-    });
-
-    const response: CloudEngineResponse = {
-      id: requestId,
-      requestId,
-      backend: BACKEND_ID,
-      lines,
-      nodes: lines.reduce((sum, line) => sum + (line.nodes ?? 0), 0),
-      nps: 1_500_000 + safeMultiPv * 50_000,
-      engineName: ENGINE_DISPLAY_NAME,
-    };
-
-    if (DEBUG_ENGINE_LOGS) {
-      console.log("[ENGINE CORE] (cloud api) Responding", {
-        requestId,
-        fenPreview: fen.slice(0, 60),
-        movetimeMs: forwardPayload.movetimeMs,
-        searchMode: forwardPayload.searchMode,
-        targetDepth: forwardPayload.targetDepth,
-        multiPv: safeMultiPv,
-        depth: lines[0]?.depth,
-        scoreCp: lines[0]?.scoreCp,
-      });
+        ok: false,
+        status: "error",
+        errorMessage: error instanceof Error ? error.message : String(error ?? "Unknown error"),
+      };
     }
-
-    return response;
   };
 
-  const requestPromise = runEvaluation();
+  const requestPromise = forwardToExternal();
   inflightRequests.set(cacheKey, requestPromise);
   try {
-    const payload = await requestPromise;
-    evalCache.set(cacheKey, { payload, fetchedAt: Date.now() });
-    pruneCache();
-    return withCacheHeaders(applyRequestId(payload, requestId), "MISS", cacheKeyHash);
+    const result = await requestPromise;
+    if (result.ok) {
+      evalCache.set(cacheKey, { payload: result.payload, fetchedAt: Date.now() });
+      pruneCache();
+      if (cachedPayload) {
+        return withCacheHeaders(
+          applyRequestId(cachedPayload, requestId),
+          "HIT",
+          cacheKeyHash,
+          buildDebugMeta({
+            source: "cache",
+            cacheHit: true,
+            upstreamOk: true,
+            upstreamStatus: result.status,
+          })
+        );
+      }
+      return withCacheHeaders(
+        applyRequestId(result.payload, requestId),
+        "MISS",
+        cacheKeyHash,
+        buildDebugMeta({
+          source: "upstream",
+          cacheHit: false,
+          upstreamOk: true,
+          upstreamStatus: result.status,
+        })
+      );
+    }
+    if (cachedPayload) {
+      return withCacheHeaders(
+        applyRequestId(cachedPayload, requestId),
+        "HIT",
+        cacheKeyHash,
+        buildDebugMeta({
+          source: "cache",
+          cacheHit: true,
+          upstreamOk: false,
+          upstreamStatus: result.status,
+        })
+      );
+    }
+    return withErrorPayload(
+      result.errorMessage,
+      resolveUpstreamStatusCode(result.status),
+      buildDebugMeta({
+        source: "upstream",
+        cacheHit: false,
+        upstreamOk: false,
+        upstreamStatus: result.status,
+      })
+    );
   } finally {
     inflightRequests.delete(cacheKey);
   }

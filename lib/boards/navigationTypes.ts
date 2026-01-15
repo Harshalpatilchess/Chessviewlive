@@ -16,9 +16,12 @@ export type BoardNavigationEntry = {
   blackClock?: string | null;
   whiteTimeMs?: number | null;
   blackTimeMs?: number | null;
+  clockUpdatedAtMs?: number | null;
   sideToMove?: "white" | "black" | null;
   evaluation?: number | null;
+  miniEvalCp?: number | null;
   finalFen?: string | null;
+  previewFen?: string | null;
   moveList?: string[] | null;
   white: BoardNavigationPlayer;
   black: BoardNavigationPlayer;

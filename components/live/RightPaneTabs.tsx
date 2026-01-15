@@ -765,6 +765,7 @@ const RightPaneTabs = ({
                 currentBoardId={currentBoardId}
                 paneQuery={activeTab}
                 compact={boardsCompactMode || isCompact}
+                viewerEvalBars={mode === "live" || mode === "replay"}
                 onBoardClick={onBoardSelect}
               />
             </div>
