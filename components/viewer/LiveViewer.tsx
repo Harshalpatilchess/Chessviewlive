@@ -19,8 +19,8 @@ import ViewerShell from "@/components/viewer/ViewerShell";
 import { DEFAULT_TOURNAMENT_SLUG, buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
 import { formatBoardContextLabel, formatBoardLabel } from "@/lib/boardContext";
 import { WORLD_CUP_DEMO_PLIES, pliesFromPgn } from "@/lib/mockGames";
-import { pliesToFenAt } from "@/lib/chess/pgn";
-import { buildBoardPaths } from "@/lib/paths";
+import { movesToPlies, pliesToFenAt } from "@/lib/chess/pgn";
+import { buildBoardPaths, buildBroadcastBoardPath } from "@/lib/paths";
 import { mapEvaluationToBar, type EvaluationBarMapping } from "@/lib/engine/evalMapping";
 import type { EngineProfileId } from "@/lib/engine/config";
 import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
@@ -194,25 +194,19 @@ export function LiveViewer({
     return `/t/${encodeURIComponent(tournamentLabel)}`;
   }, [tournamentLabel]);
   const isHealthyLive = status === "connected" && isLive;
-  const canonicalPath = useMemo(() => {
-    const encodedBoard = encodeURIComponent(boardId);
-    if (tournamentId && tournamentId.trim().length > 0) {
-      return `/t/${encodeURIComponent(tournamentId.trim())}/live/${encodedBoard}`;
-    }
-    return `/live/${encodedBoard}`;
-  }, [boardId, tournamentId]);
-  const replayPath = useMemo(() => {
-    const encodedBoard = encodeURIComponent(boardId);
-    if (tournamentId && tournamentId.trim().length > 0) {
-      return `/t/${encodeURIComponent(tournamentId.trim())}/replay/${encodedBoard}`;
-    }
-    return `/replay/${encodedBoard}`;
-  }, [boardId, tournamentId]);
+  const canonicalPath = useMemo(
+    () => buildBroadcastBoardPath(boardId, "live", tournamentId),
+    [boardId, tournamentId]
+  );
+  const replayPath = useMemo(
+    () => buildBroadcastBoardPath(boardId, "replay", tournamentId),
+    [boardId, tournamentId]
+  );
   const latestReplayPath = useMemo(() => {
     if (!replayPath) return null;
     return `${replayPath}?latest=1`;
   }, [replayPath]);
-  const replayOverlayHref = latestReplayPath ?? replayPath ?? `/replay/${boardId}`;
+  const replayOverlayHref = latestReplayPath ?? replayPath ?? buildBroadcastBoardPath(boardId, "replay", tournamentId);
   const fallbackSlug = useMemo(() => {
     const trimmed = tournamentId?.trim().toLowerCase();
     return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TOURNAMENT_SLUG;
@@ -252,10 +246,6 @@ export function LiveViewer({
   const boardStatus: GameStatus | null = boardManifestGame?.status ?? null;
   const boardNumber = boardSelection.board;
   const showReplayOverlay = !isLive && Boolean(replayOverlayHref);
-  const boardNavBase = useMemo(() => {
-    if (!tournamentHref) return null;
-    return `${tournamentHref}/live`;
-  }, [tournamentHref]);
   const lastKnownStatusRef = useRef<GameStatus | null | undefined>(boardStatus);
   const pendingReplayRedirectRef = useRef(false);
 
@@ -273,23 +263,23 @@ export function LiveViewer({
     lastKnownStatusRef.current = boardStatus;
   }, [boardStatus, boardManifestGame?.moveList?.length, replayPath, router]);
   const previousBoardHref = useMemo(() => {
-    if (!boardNavBase || boardSelection.board <= 1) return null;
+    if (boardSelection.board <= 1) return null;
     const prevBoardId = buildBoardIdentifier(
       boardSelection.tournamentSlug,
       boardSelection.round,
       boardSelection.board - 1
     );
-    return `${boardNavBase}/${prevBoardId}`;
-  }, [boardNavBase, boardSelection]);
+    return buildBroadcastBoardPath(prevBoardId, "live", boardSelection.tournamentSlug);
+  }, [boardSelection]);
   const nextBoardHref = useMemo(() => {
-    if (!boardNavBase || boardSelection.board >= BOARDS_PER_ROUND) return null;
+    if (boardSelection.board >= BOARDS_PER_ROUND) return null;
     const nextBoardId = buildBoardIdentifier(
       boardSelection.tournamentSlug,
       boardSelection.round,
       boardSelection.board + 1
     );
-    return `${boardNavBase}/${nextBoardId}`;
-  }, [boardNavBase, boardSelection]);
+    return buildBroadcastBoardPath(nextBoardId, "live", boardSelection.tournamentSlug);
+  }, [boardSelection]);
   const tournamentBoardIds = useMemo(() => {
     if (!tournamentId) return null;
     return getTournamentBoardIds(tournamentId);
@@ -317,6 +307,10 @@ export function LiveViewer({
   const currentBoardLabel = useMemo(() => formatBoardLabel(boardId), [boardId]);
   const videoRoomLabel = overlayLabel ?? currentBoardLabel;
   const plies = useMemo(() => {
+    const moveList = boardManifestGame?.moveList;
+    if (Array.isArray(moveList) && moveList.length > 0) {
+      return movesToPlies(moveList);
+    }
     if (boardSelection.tournamentSlug === "worldcup2025" && boardSelection.round === 1) {
       const pgn = getWorldCupPgnForBoard(boardSelection.board);
       const parsed = pliesFromPgn(pgn);
@@ -327,9 +321,16 @@ export function LiveViewer({
         boardNumber: boardSelection.board,
         boardId,
       });
+      return WORLD_CUP_DEMO_PLIES;
     }
-    return WORLD_CUP_DEMO_PLIES;
-  }, [boardId, boardSelection.board, boardSelection.round, boardSelection.tournamentSlug]);
+    return [];
+  }, [
+    boardId,
+    boardManifestGame?.moveList,
+    boardSelection.board,
+    boardSelection.round,
+    boardSelection.tournamentSlug,
+  ]);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(() =>
     plies.length ? plies.length - 1 : -1
   );
@@ -1697,7 +1698,7 @@ export function LiveViewer({
   }, [triggerSubscribeGate]);
 
   const headerControls = (
-    <div className={isMini ? "flex w-full flex-wrap items-center justify-between gap-2" : "flex items-center gap-2"}>
+    <div className={isMini ? "flex items-center gap-2" : "flex items-center gap-2"}>
       <LiveHeaderControls
         boardId={boardId}
         tournamentSlug={boardSelection.tournamentSlug}
@@ -1708,14 +1709,6 @@ export function LiveViewer({
         onBoardSwitchBlocked={triggerSubscribeGate}
         density={resolvedDensity}
       />
-      {boardStatus === "final" && boardManifestGame?.moveList?.length ? (
-        <Link
-          href={`/replay/${boardId}`}
-          className="rounded-full border border-white/20 bg-slate-900/70 px-3 py-1 text-[12px] font-semibold uppercase tracking-wide text-slate-100 transition hover:border-sky-300 hover:text-sky-100"
-        >
-          Replay
-        </Link>
-      ) : null}
     </div>
   );
 

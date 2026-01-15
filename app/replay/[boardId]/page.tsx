@@ -12,15 +12,16 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { formatBoardContextLabel, formatBoardLabel } from "@/lib/boardContext";
 import { WORLD_CUP_DEMO_PLIES, pliesFromPgn } from "@/lib/mockGames";
-import { buildBoardPaths } from "@/lib/paths";
+import { buildBoardPaths, buildBroadcastBoardPath } from "@/lib/paths";
 import ViewerShell from "@/components/viewer/ViewerShell";
 import LiveHeaderControls from "@/components/viewer/LiveHeaderControls";
-import { pliesToFenAt } from "@/lib/chess/pgn";
+import { movesToPlies, pliesToFenAt } from "@/lib/chess/pgn";
 import { mapEvaluationToBar, type EvaluationBarMapping } from "@/lib/engine/evalMapping";
 import { ENGINE_DISPLAY_NAME, type EngineProfileId } from "@/lib/engine/config";
 import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
 import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
 import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
+import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
 import { getReplayProgress, setReplayProgress, clearReplayProgress } from "@/lib/replayProgress";
 import { getReplaySpeed, setReplaySpeed } from "@/lib/replaySettings";
 import {
@@ -247,13 +248,10 @@ export default function ReplayBoardPage({
     if (!tournamentLabel) return null;
     return `/t/${encodeURIComponent(tournamentLabel)}`;
   }, [tournamentLabel]);
-  const canonicalPath = useMemo(() => {
-    const encodedBoard = encodeURIComponent(boardId);
-    if (tournamentId && tournamentId.trim().length > 0) {
-      return `/t/${encodeURIComponent(tournamentId.trim())}/replay/${encodedBoard}`;
-    }
-    return `/replay/${encodedBoard}`;
-  }, [boardId, tournamentId]);
+  const canonicalPath = useMemo(
+    () => buildBroadcastBoardPath(boardId, "replay", tournamentId),
+    [boardId, tournamentId]
+  );
   const replayPath = canonicalPath;
   const latestReplayPath = useMemo(() => {
     if (!replayPath) return null;
@@ -267,6 +265,10 @@ export default function ReplayBoardPage({
     () => parseBoardIdentifier(boardId, fallbackSlug),
     [boardId, fallbackSlug]
   );
+  const liveFeedVersion = useTournamentLiveFeed({
+    tournamentSlug: boardSelection.tournamentSlug,
+    round: boardSelection.round,
+  });
   const boardManifestGame = useMemo(
     () =>
       getTournamentGameManifest(
@@ -274,7 +276,7 @@ export default function ReplayBoardPage({
         boardSelection.round,
         boardSelection.board
       ),
-    [boardSelection.tournamentSlug, boardSelection.round, boardSelection.board]
+    [boardSelection.tournamentSlug, boardSelection.round, boardSelection.board, liveFeedVersion]
   );
   const manifestWhiteName = boardManifestGame?.white ?? DEMO_WHITE_PLAYER.name;
   const manifestBlackName = boardManifestGame?.black ?? DEMO_BLACK_PLAYER.name;
@@ -296,6 +298,10 @@ export default function ReplayBoardPage({
   const displayGameLabel = DEMO_TOURNAMENT_LABEL;
 
   const plies = useMemo(() => {
+    const moveList = boardManifestGame?.moveList;
+    if (Array.isArray(moveList) && moveList.length > 0) {
+      return movesToPlies(moveList);
+    }
     if (boardSelection.tournamentSlug === "worldcup2025" && boardSelection.round === 1) {
       const pgn = getWorldCupPgnForBoard(boardSelection.board);
       const parsed = pliesFromPgn(pgn);
@@ -306,12 +312,26 @@ export default function ReplayBoardPage({
         boardNumber: boardSelection.board,
         boardId,
       });
+      return WORLD_CUP_DEMO_PLIES;
     }
-    return WORLD_CUP_DEMO_PLIES;
-  }, [boardId, boardSelection.board, boardSelection.round, boardSelection.tournamentSlug]);
+    return [];
+  }, [
+    boardId,
+    boardManifestGame?.moveList,
+    boardSelection.board,
+    boardSelection.round,
+    boardSelection.tournamentSlug,
+  ]);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(() =>
     plies.length ? plies.length - 1 : -1
   );
+  useEffect(() => {
+    if (!plies.length) {
+      setCurrentMoveIndex(-1);
+      return;
+    }
+    setCurrentMoveIndex(plies.length - 1);
+  }, [plies.length]);
   const [analysisEnabled, setAnalysisEnabled] = useState(false);
   const { orientation, toggleOrientation: handleFlip } = usePersistentBoardOrientation("white");
   const [gaugeEnabled, setGaugeEnabled] = useState(true);
@@ -418,28 +438,24 @@ export default function ReplayBoardPage({
     return mapEvaluationToBar(engineEval, engineDisplayFen, { enabled: shouldFetchEval });
   }, [engineDisplayFen, engineEval, gaugeEnabled, shouldFetchEval]);
   const replayStatus = { label: "REPLAY", className: "bg-blue-600/80 text-white" };
-  const boardNavBase = useMemo(() => {
-    if (!tournamentHref) return null;
-    return `${tournamentHref}/replay`;
-  }, [tournamentHref]);
   const previousBoardHref = useMemo(() => {
-    if (!boardNavBase || boardSelection.board <= 1) return null;
+    if (boardSelection.board <= 1) return null;
     const prevBoardId = buildBoardIdentifier(
       boardSelection.tournamentSlug,
       boardSelection.round,
       boardSelection.board - 1
     );
-    return `${boardNavBase}/${prevBoardId}`;
-  }, [boardNavBase, boardSelection]);
+    return buildBroadcastBoardPath(prevBoardId, "replay", boardSelection.tournamentSlug);
+  }, [boardSelection]);
   const nextBoardHref = useMemo(() => {
-    if (!boardNavBase || boardSelection.board >= BOARDS_PER_ROUND) return null;
+    if (boardSelection.board >= BOARDS_PER_ROUND) return null;
     const nextBoardId = buildBoardIdentifier(
       boardSelection.tournamentSlug,
       boardSelection.round,
       boardSelection.board + 1
     );
-    return `${boardNavBase}/${nextBoardId}`;
-  }, [boardNavBase, boardSelection]);
+    return buildBroadcastBoardPath(nextBoardId, "replay", boardSelection.tournamentSlug);
+  }, [boardSelection]);
   const tournamentBoardIds = useMemo(() => {
     if (!tournamentId) return null;
     return getTournamentBoardIds(tournamentId);
@@ -1649,7 +1665,7 @@ export default function ReplayBoardPage({
     </>
   );
   const headerControls = (
-    <div className={isMini ? "flex w-full flex-wrap items-center justify-between gap-2" : "flex flex-wrap items-center justify-end gap-2"}>
+    <div className={isMini ? "flex items-center gap-2" : "flex items-center gap-2"}>
       <LiveHeaderControls
         boardId={boardId}
         tournamentSlug={boardSelection.tournamentSlug}
@@ -1727,6 +1743,7 @@ export default function ReplayBoardPage({
       previousBoardHref={previousBoardHref}
       nextBoardHref={nextBoardHref}
       boardNumber={boardNumber}
+      liveVersion={liveFeedVersion}
       mediaContainerClass={mediaContainerClass}
       videoPane={{
         containerRef: videoContainerRef,

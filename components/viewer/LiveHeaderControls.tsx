@@ -9,6 +9,7 @@ import {
   normalizeTournamentSlug,
   parseBoardIdentifier,
 } from "@/lib/boardId";
+import { buildBroadcastBoardPath } from "@/lib/paths";
 
 type LiveHeaderControlsProps = {
   boardId: string;
@@ -50,7 +51,7 @@ export default function LiveHeaderControls({
     const params = new URLSearchParams();
     if (pane) params.set("pane", pane);
     const suffix = params.toString();
-    const href = `/live/${nextBoardId}${suffix ? `?${suffix}` : ""}`;
+    const href = `${buildBroadcastBoardPath(nextBoardId, "live", activeSlug)}${suffix ? `?${suffix}` : ""}`;
     router.push(href, { scroll: false });
   };
 

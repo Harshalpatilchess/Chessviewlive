@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 600" role="img" aria-labelledby="title desc">
+  <title id="title">Armenian Championship Highest League 2026</title>
+  <desc id="desc">Banner with Armenian flag colors and tournament title.</desc>
+  <defs>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18" />
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="vignette" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#000000" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.5" />
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="600" fill="#111827" />
+  <rect y="0" width="1600" height="200" fill="#d32f2f" />
+  <rect y="200" width="1600" height="200" fill="#1e4fa1" />
+  <rect y="400" width="1600" height="200" fill="#f4a532" />
+  <rect width="1600" height="600" fill="url(#vignette)" />
+  <polygon points="0,0 1600,0 1600,160 0,320" fill="url(#sheen)" />
+  <g>
+    <text
+      x="80"
+      y="260"
+      fill="#f8fafc"
+      font-size="64"
+      font-weight="600"
+      font-family="&quot;Cinzel&quot;, &quot;Times New Roman&quot;, serif"
+      letter-spacing="2"
+    >
+      Armenian Championship
+    </text>
+    <text
+      x="80"
+      y="340"
+      fill="#f8fafc"
+      font-size="56"
+      font-weight="500"
+      font-family="&quot;Cinzel&quot;, &quot;Times New Roman&quot;, serif"
+      letter-spacing="1.5"
+    >
+      Highest League 2026
+    </text>
+  </g>
+</svg>

@@ -10,6 +10,7 @@ const BOARD_ID_REGEX = /^([a-z0-9-]+)-board(\d+)\.(\d+)$/i;
 
 const TOURNAMENT_SLUG_ALIASES: Record<string, string> = {
   worldcup: DEFAULT_TOURNAMENT_SLUG,
+  "armenian-championship-2026": "armenian-championship-highest-league-2026",
 };
 
 const toPositiveInteger = (value: number, fallback: number) => {
