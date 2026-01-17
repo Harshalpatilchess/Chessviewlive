@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { CORE_VERSION } from "@chessview/core";
 import "./globals.css";
 import "./chessground.css";
 
@@ -24,6 +25,7 @@ export default function RootLayout({
 }: Readonly<{
   children: ReactNode;
 }>) {
+  console.log("[apps/web] @chessview/core version:", CORE_VERSION);
   return (
     <html lang="en" suppressHydrationWarning>
       <body
