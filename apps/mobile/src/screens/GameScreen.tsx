@@ -16,10 +16,8 @@ import soundManager from '../utils/soundManager';
 import { Chess } from 'chess.js';
 import NotationView, { Move } from '../components/NotationView';
 import EngineView from '../components/EngineView';
-import InfoToastCard from '../components/InfoToastCard';
 import { usePollTournamentGames } from '../hooks/usePollTournamentGames';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-import { VolumeManager, VolumeResult } from 'react-native-volume-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import PlayerProfileToast, { PlayerData } from '../components/PlayerProfileToast';
@@ -127,7 +125,8 @@ const PlayerInfoBlock = memo(({
 const PlayerStrip = memo(({
     whiteName, whiteTitle, whiteFederation, whiteRating, whiteClock,
     blackName, blackTitle, blackFederation, blackRating, blackClock,
-    result
+    result,
+    onPlayerPress
 }: {
     whiteName: string; whiteTitle?: string; whiteFederation?: string; whiteRating?: number; whiteClock?: string;
     blackName: string; blackTitle?: string; blackFederation?: string; blackRating?: number; blackClock?: string;
@@ -315,142 +314,6 @@ export default function GameScreen({ route, navigation }: Props) {
             setCurrentMoveIndex(lastPly);
         }
     }, [isLiveMode, lastPly]);
-
-    // -- Volume Navigation Logic --
-    const [volumeNavEnabled, setVolumeNavEnabled] = useState<boolean | null>(null);
-    const isRestoringVol = useRef(false);
-    const initialVolumeRef = useRef<number>(0);
-    // Keep a ref of state to use inside valid listener without re-binding
-    const navStateRef = useRef({
-        currentMoveIndex,
-        lastPly,
-        variation,
-        isLiveMode
-    });
-
-    useEffect(() => {
-        navStateRef.current = { currentMoveIndex, lastPly, variation, isLiveMode };
-    }, [currentMoveIndex, lastPly, variation, isLiveMode]);
-
-    // Load Preference
-    useEffect(() => {
-        AsyncStorage.getItem('volume_nav_enabled').then(val => {
-            if (val !== null) setVolumeNavEnabled(val === 'true');
-        });
-    }, []);
-
-    // Ask Permission (First Time)
-    useFocusEffect(
-        useCallback(() => {
-            const timer = setTimeout(() => {
-                AsyncStorage.getItem('volume_nav_enabled').then(val => {
-                    if (val === null) {
-                        Alert.alert(
-                            "Enable Volume Navigation?",
-                            "Do you want to use volume buttons to move through moves?",
-                            [
-                                {
-                                    text: "No",
-                                    style: "cancel",
-                                    onPress: () => {
-                                        setVolumeNavEnabled(false);
-                                        AsyncStorage.setItem('volume_nav_enabled', 'false');
-                                    }
-                                },
-                                {
-                                    text: "Yes",
-                                    onPress: () => {
-                                        setVolumeNavEnabled(true);
-                                        AsyncStorage.setItem('volume_nav_enabled', 'true');
-                                    }
-                                }
-                            ]
-                        );
-                    }
-                });
-            }, 500);
-            return () => clearTimeout(timer);
-        }, [])
-    );
-
-    // Volume Listener
-    useFocusEffect(
-        useCallback(() => {
-            if (volumeNavEnabled !== true) return;
-
-            // Expo Go Safeguard
-            const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
-            if (isExpoGo) {
-                // Friendly dev warning only
-                return;
-            }
-
-            let cleaner: any;
-
-            const initVolumeListener = async () => {
-                try {
-                    const vol = await VolumeManager.getVolume();
-                    const baselineVol = typeof vol === 'object' ? vol.volume : vol;
-                    initialVolumeRef.current = baselineVol;
-
-                    cleaner = VolumeManager.addVolumeListener((result) => {
-                        if (isRestoringVol.current) {
-                            isRestoringVol.current = false;
-                            return;
-                        }
-
-                        const newVol = result.volume;
-                        const oldVol = initialVolumeRef.current;
-
-                        // Threshold to avoid noise
-                        if (Math.abs(newVol - oldVol) < 0.0001) return;
-
-                        if (newVol > oldVol) {
-                            // UP -> Next
-                            const state = navStateRef.current;
-                            let maxIdx = state.lastPly;
-                            if (state.variation) {
-                                const activeLine = state.variation.lines.find(l => l.id === state.variation!.activeLineId);
-                                if (activeLine) maxIdx = state.variation!.anchorPly + activeLine.moves.length;
-                            }
-                            if (state.currentMoveIndex < maxIdx) {
-                                setCurrentMoveIndex(state.currentMoveIndex + 1);
-                                setIsLiveMode(false);
-                                if (__DEV__) console.log("Volume UP -> Move Next");
-                            }
-                        } else {
-                            // DOWN -> Prev
-                            const state = navStateRef.current;
-                            if (state.currentMoveIndex > 0) {
-                                setCurrentMoveIndex(state.currentMoveIndex - 1);
-                                setIsLiveMode(false);
-                                if (__DEV__) console.log("Volume DOWN -> Move Prev");
-                            }
-                        }
-
-                        // Restore volume
-                        isRestoringVol.current = true;
-                        VolumeManager.setVolume(oldVol).catch(() => { });
-                    });
-
-                    // Hide native UI
-                    VolumeManager.showNativeVolumeUI({ enabled: false });
-
-                } catch (e) {
-                    console.warn("Error init volume listener", e);
-                }
-            };
-
-            initVolumeListener();
-
-            return () => {
-                if (cleaner) cleaner.remove();
-                if (!isExpoGo) {
-                    VolumeManager.showNativeVolumeUI({ enabled: true });
-                }
-            };
-        }, [volumeNavEnabled])
-    );
 
 
     // Effect: Reset variation when game changes
