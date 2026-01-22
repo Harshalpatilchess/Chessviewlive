@@ -930,6 +930,7 @@ export default function GameScreen({ route, navigation }: Props) {
                     blackRating={blackRating}
                     blackClock={activeBlackClock}
                     result={gameResult}
+                    onPlayerPress={openPlayerToast}
                 />
 
                 {/* Chess Board + Eval Bar */}
@@ -1069,6 +1070,12 @@ export default function GameScreen({ route, navigation }: Props) {
                     )}
                 </View>
             </View>
+
+            <PlayerProfileToast
+                visible={toastState.visible}
+                data={toastState.data}
+                anchorLayout={toastState.anchor}
+            />
         </View>
     );
 }
