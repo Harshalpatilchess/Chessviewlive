@@ -1,44 +1,28 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, Pressable, Platform } from 'react-native';
-import { broadcastTheme } from '../theme/broadcastTheme';
+import { premiumTheme } from '../theme/premiumTheme';
 
-// Premium Neutral Dark Theme (Mobile-only override)
-const neutralTheme = {
-    colors: {
-        bg: '#171717',        // Neutral-900 (Main BG)
-        bgHeader: '#262626',  // Neutral-800 (Header BG)
-        border: '#404040',    // Neutral-700 (Separators)
-
-        textPrimary: '#f5f5f5',   // Neutral-100 (Moves)
-        textSecondary: '#a3a3a3', // Neutral-400 (Indexes/Dim)
-
-        // Variation specific
-        boxBg: '#262626',
-        boxBorder: '#404040',
-    }
-};
-
-// Centralized notation styling for easy web-parity tuning
+// Centralized notation styling using shared premium theme
 const notationTheme = {
     colors: {
-        // Highlight: Yellow-500 at 20% (Gold/Amber tint) + Subtle Border
-        highlight: 'rgba(234, 179, 8, 0.20)',
-        highlightBorder: 'rgba(234, 179, 8, 0.40)',
+        // Highlight: Gold/Amber tint + Subtle Border
+        highlight: premiumTheme.colors.highlightBg,
+        highlightBorder: 'rgba(234, 179, 8, 0.40)', // Keep local tweak if needed, or move to theme if reused
 
-        highlightText: '#ffffff', // White text
-        rowActiveBg: 'rgba(255, 255, 255, 0.04)', // Slightly clearer active row
-        rowBorder: '#EAB308', // Solid Yellow-500
+        highlightText: '#ffffff',
+        rowActiveBg: 'rgba(255, 255, 255, 0.04)',
+        rowBorder: premiumTheme.colors.textTertiary, // Gold/Amber-400
 
-        textDim: neutralTheme.colors.textSecondary,
-        textNormal: neutralTheme.colors.textPrimary,
+        textDim: premiumTheme.colors.textSecondary,
+        textNormal: premiumTheme.colors.textPrimary,
 
         // Interaction
-        pressedBg: 'rgba(255, 255, 255, 0.08)', // Subtle white overlay on press
+        pressedBg: premiumTheme.colors.pressedBg,
         pressedVariation: 'rgba(255, 255, 255, 0.1)',
     },
     layout: {
-        cellRadius: 4, // Slightly rounder for premium feel
-        cellPaddingHorizontal: 6, // breathing room
+        cellRadius: 4,
+        cellPaddingHorizontal: 6,
         cellPaddingVertical: 2,
     }
 };
@@ -311,7 +295,7 @@ const styles = StyleSheet.create({
     container: {
         flex: 1,
         width: '100%',
-        backgroundColor: neutralTheme.colors.bg,
+        backgroundColor: premiumTheme.colors.bg,
     },
     headerRow: {
         flexDirection: 'row',
@@ -319,14 +303,14 @@ const styles = StyleSheet.create({
         paddingHorizontal: 12,
         gap: 6,
         height: 36,
-        backgroundColor: neutralTheme.colors.bgHeader,
+        backgroundColor: premiumTheme.colors.bgHeader,
         borderBottomWidth: 1,
-        borderBottomColor: neutralTheme.colors.border,
+        borderBottomColor: premiumTheme.colors.border,
     },
     headerIndex: {
         width: 48,
         fontSize: 11,
-        color: neutralTheme.colors.textSecondary,
+        color: premiumTheme.colors.textSecondary,
         fontWeight: '500',
         textTransform: 'uppercase',
         letterSpacing: 0.4,
@@ -334,7 +318,7 @@ const styles = StyleSheet.create({
     headerText: {
         flex: 1,
         fontSize: 11,
-        color: neutralTheme.colors.textSecondary,
+        color: premiumTheme.colors.textSecondary,
         fontWeight: '500',
         textTransform: 'uppercase',
         letterSpacing: 0.4,
@@ -408,17 +392,17 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     variationIcon: {
-        color: neutralTheme.colors.textSecondary,
+        color: premiumTheme.colors.textSecondary,
         fontSize: 16,
     },
     variationBox: {
         flex: 1,
         flexDirection: 'row',
         alignItems: 'center',
-        backgroundColor: neutralTheme.colors.boxBg,
+        backgroundColor: premiumTheme.colors.bgHeader, // boxed variations
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: neutralTheme.colors.boxBorder,
+        borderColor: premiumTheme.colors.border,
         height: 40,
         paddingHorizontal: 8,
         position: 'relative',
@@ -450,9 +434,9 @@ const styles = StyleSheet.create({
     liveBtnSmall: {
         position: 'absolute',
         right: 4,
-        backgroundColor: neutralTheme.colors.bg,
+        backgroundColor: premiumTheme.colors.bg,
         borderWidth: 1,
-        borderColor: neutralTheme.colors.border,
+        borderColor: premiumTheme.colors.border,
         paddingHorizontal: 8,
         paddingVertical: 2,
         borderRadius: 12,
@@ -460,7 +444,7 @@ const styles = StyleSheet.create({
     liveBtnText: {
         fontSize: 10,
         fontWeight: '700',
-        color: neutralTheme.colors.textSecondary,
+        color: premiumTheme.colors.textSecondary,
     },
     variationContainer: {
         width: '100%',
@@ -468,17 +452,17 @@ const styles = StyleSheet.create({
     variationBranchLine: {
         width: 1,
         height: '100%',
-        backgroundColor: neutralTheme.colors.border,
+        backgroundColor: premiumTheme.colors.border,
         marginLeft: 6,
         marginRight: 10,
     },
     variationBoxIndented: {
         marginTop: 4,
         borderColor: 'transparent',
-        backgroundColor: '#202020', // inclusive neutral 850
+        backgroundColor: premiumTheme.colors.bgSubtle, // inclusive neutral 850
     },
     variationBoxActive: {
         borderColor: notationTheme.colors.rowBorder,
-        backgroundColor: '#262626', // back to neutral 800
+        backgroundColor: premiumTheme.colors.bgHeader, // back to neutral 800
     }
 });
