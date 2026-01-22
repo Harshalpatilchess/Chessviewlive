@@ -2,6 +2,7 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, FlatList, TouchableOpacity, useWindowDimensions, Modal, Pressable, Alert, TextInput } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { type GameSummary } from '@chessview/core';
+import { getDefaultRound, isGameOngoing, isGameFinished } from '../utils/roundSelection';
 import { broadcastTheme } from '../theme/broadcastTheme';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
@@ -25,25 +26,7 @@ const CARD_HEIGHT = 400; // Approximate: 16 (pad) + 30 (row) + 6 (gap) + 260 (bo
 const CARD_MARGIN = 16;
 const ITEM_HEIGHT = CARD_HEIGHT + CARD_MARGIN;
 
-// Helper function to determine default round selection
-function getDefaultRound(games: GameSummary[]): number {
-    if (games.length === 0) return 1;
 
-    // Filter games that have round data
-    const gamesWithRounds = games.filter(g => g.round !== undefined && g.round !== null);
-    if (gamesWithRounds.length === 0) return 1;
-
-    // Strategy 1: If there are live games, pick the highest round containing live games
-    const liveGames = gamesWithRounds.filter(g => g.isLive);
-    if (liveGames.length > 0) {
-        const liveRounds = liveGames.map(g => g.round!);
-        return Math.max(...liveRounds);
-    }
-
-    // Strategy 2: Otherwise, pick the highest available round number
-    const allRounds = gamesWithRounds.map(g => g.round!);
-    return Math.max(...allRounds);
-}
 
 // Ensure we always have rounds 1..13 even if no games loaded
 function getFallbackRounds(): number[] {
@@ -54,8 +37,8 @@ import { usePollTournamentGames } from '../hooks/usePollTournamentGames';
 import { RefreshControl } from 'react-native';
 
 export default function TournamentBoardsScreen({ route, navigation }: Props) {
-    const { tournamentSlug, tournamentName } = route.params;
-    const { games, refresh, isRefreshing } = usePollTournamentGames(tournamentSlug);
+    const { tournamentSlug, tournamentName, initialRound } = route.params;
+    const { games, refresh, isRefreshing, isHydrated } = usePollTournamentGames(tournamentSlug);
     const [filter, setFilter] = useState<FilterType>('ALL');
     const [menuDropdownVisible, setMenuDropdownVisible] = useState(false);
     const [overflowDropdownVisible, setOverflowDropdownVisible] = useState(false);
@@ -93,8 +76,45 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
         return Array.from(roundsSet).sort((a, b) => b - a);
     }, [games]);
 
-    // Initialize selected round based on default logic
-    const [selectedRound, setSelectedRound] = useState<number>(() => getDefaultRound(games));
+    // Track if we have performed the initial round selection
+    const hasInitializedRound = useRef(false);
+
+    // Initialize selected round state
+    // If we have games immediately (memory cache), use them. Otherwise default to 1 but wait for update.
+    // Initialize selectedRound state
+    // Use initialRound from navigation (Computed from memory cache) if available
+    // Otherwise fallback to existing logic (memory cache check again or default 1)
+    const [selectedRound, setSelectedRound] = useState<number | null>(() => {
+        if (initialRound) {
+            hasInitializedRound.current = true;
+            if (__DEV__) console.log(`[TournamentBoards] initial selectedRound=${initialRound} (param/cache)`);
+            return initialRound;
+        }
+
+        // Hydration Gate: If not hydrated (and thus no games potentially), start as null to hide UI
+        if (!isHydrated) {
+            if (__DEV__) console.log('[HydrationGate] isHydrated=false -> withholding rounds UI');
+            return null;
+        }
+
+        const initialRoundFromEffect = getDefaultRound(games);
+        // If games are already present, mark as initialized
+        if (games.length > 0) {
+            hasInitializedRound.current = true;
+        }
+        return initialRoundFromEffect;
+    });
+
+    // EFFECT: Update round when games first load (Async/Disk Cache case) or Hydration completes
+    useEffect(() => {
+        // Condition: Not initialized yet, but we are now hydrated.
+        if (!hasInitializedRound.current && isHydrated) {
+            const bestRound = getDefaultRound(games);
+            setSelectedRound(bestRound);
+            hasInitializedRound.current = true;
+            if (__DEV__) console.log(`[HydrationGate] isHydrated=true -> selecting preferred round R${bestRound}`);
+        }
+    }, [games, isHydrated]);
 
     // Load selected country from settings
     useEffect(() => {
@@ -171,6 +191,8 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
     const filteredGames = games.filter(game => {
         // First apply round filter
         // Use loose equality or explicit parsing as game.round might be string in some edge cases
+        if (selectedRound === null) return false; // Gate: No games if no round selected
+
         if (game.round != undefined && game.round != null) {
             const r = typeof game.round === 'string' ? parseInt(game.round, 10) : game.round;
             if (r !== selectedRound) return false;
@@ -290,10 +312,12 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
                                 <Text style={styles.compactTournamentName} numberOfLines={1} ellipsizeMode="tail">
                                     {tournamentName}
                                 </Text>
-                                <RoundSelectorCapsule
-                                    round={selectedRound}
-                                    onPress={() => setRoundSelectorVisible(true)}
-                                />
+                                {selectedRound !== null && (
+                                    <RoundSelectorCapsule
+                                        round={selectedRound}
+                                        onPress={() => setRoundSelectorVisible(true)}
+                                    />
+                                )}
                             </View>
 
                             {/* Tooltip */}
@@ -499,13 +523,20 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
             <RoundSelectorSheet
                 visible={roundSelectorVisible}
                 rounds={availableRounds}
-                selectedRound={selectedRound}
-                onSelectRound={setSelectedRound}
+                selectedRound={selectedRound ?? 1} // Fallback safe, though typically not visible if null
+                onSelectRound={(r) => setSelectedRound(r)}
                 onClose={() => setRoundSelectorVisible(false)}
             />
 
             {/* Games Feed */}
-            {debouncedSearchQuery.trim() && !hasSearchResults ? (
+            {selectedRound === null ? (
+                <View style={styles.listContent}>
+                    {/* Skeleton State during hydration gate */}
+                    <SkeletonGameCard />
+                    <SkeletonGameCard />
+                    <SkeletonGameCard />
+                </View>
+            ) : debouncedSearchQuery.trim() && !hasSearchResults ? (
                 <View style={styles.emptyState}>
                     <Text style={styles.emptyStateText}>No matching players</Text>
                 </View>
@@ -612,6 +643,45 @@ const PlayerRow = memo(({ name, title, federation, rating, displayValue, boardSi
                 {rating && <Text style={styles.rating}>{rating}</Text>}
             </View>
             <Text style={styles.displayValue}>{formattedDisplay}</Text>
+        </View>
+    );
+});
+
+
+const SkeletonGameCard = memo(() => {
+    const { width } = useWindowDimensions();
+
+    // Exact same responsive calculation as GameCard
+    const CARD_PADDING = 32;
+    const SCREEN_PADDING = 32;
+    const BORDER = 2;
+    const AVAILABLE_WIDTH = width - SCREEN_PADDING - CARD_PADDING - BORDER;
+    const MIN_BOARD_SIZE = 180;
+    const MAX_BOARD_SIZE = 400;
+
+    const baseBoardSize = Math.max(MIN_BOARD_SIZE, Math.min(AVAILABLE_WIDTH, MAX_BOARD_SIZE));
+    const boardSize = Math.round(baseBoardSize * 0.75);
+
+    return (
+        <View style={[styles.gameCard, { opacity: 0.6 }]}>
+            <View style={{ flexDirection: 'column' }}>
+                {/* Top Player Skeleton */}
+                <View style={{ marginBottom: 2, alignSelf: 'center', width: boardSize, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', height: 20 }}>
+                    <View style={{ width: '50%', height: 12, backgroundColor: broadcastTheme.colors.slate800, borderRadius: 2 }} />
+                    <View style={{ width: '15%', height: 12, backgroundColor: broadcastTheme.colors.slate800, borderRadius: 2 }} />
+                </View>
+
+                {/* Board Skeleton */}
+                <View style={{ alignSelf: 'center', marginVertical: 4 }}>
+                    <View style={{ width: boardSize, height: boardSize, backgroundColor: broadcastTheme.colors.slate800, borderRadius: 4 }} />
+                </View>
+
+                {/* Bottom Player Skeleton */}
+                <View style={{ marginTop: 2, alignSelf: 'center', width: boardSize, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', height: 20 }}>
+                    <View style={{ width: '50%', height: 12, backgroundColor: broadcastTheme.colors.slate800, borderRadius: 2 }} />
+                    <View style={{ width: '15%', height: 12, backgroundColor: broadcastTheme.colors.slate800, borderRadius: 2 }} />
+                </View>
+            </View>
         </View>
     );
 });
