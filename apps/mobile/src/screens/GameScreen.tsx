@@ -19,9 +19,11 @@ import EngineView from '../components/EngineView';
 import InfoToastCard from '../components/InfoToastCard';
 import { usePollTournamentGames } from '../hooks/usePollTournamentGames';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
-// import { VolumeManager, VolumeResult } from 'react-native-volume-manager';
+import { VolumeManager, VolumeResult } from 'react-native-volume-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
+import PlayerProfileToast, { PlayerData } from '../components/PlayerProfileToast';
+import { LayoutRectangle } from 'react-native';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Game'>;
 
@@ -61,7 +63,8 @@ const PlayerInfoBlock = memo(({
     rating,
     clock,
     align,
-    isWhite
+    isWhite,
+    onPress
 }: {
     name: string;
     title?: string;
@@ -70,33 +73,23 @@ const PlayerInfoBlock = memo(({
     clock?: string;
     align: 'left' | 'right';
     isWhite: boolean;
+    onPress: (data: PlayerData, anchor: LayoutRectangle) => void;
 }) => {
     const flag = getFlagEmoji(federation);
     const formattedClock = formatClock(clock || '');
-
-    // Toast Interaction Logic
-    const [toastVisible, setToastVisible] = useState(false);
-    const timeoutRef = useRef<NodeJS.Timeout>();
+    const touchableRef = useRef<View>(null);
 
     const handlePress = useCallback(() => {
-        // Clear existing timer if any
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-
-        // Show visibility
-        setToastVisible(true);
-
-        // Auto-hide after 2.5s
-        timeoutRef.current = setTimeout(() => {
-            setToastVisible(false);
-        }, 2500);
-    }, []);
-
-    // Cleanup
-    useEffect(() => {
-        return () => {
-            if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        };
-    }, []);
+        touchableRef.current?.measureInWindow((x, y, width, height) => {
+            // Pass measurement up
+            onPress({
+                name,
+                title,
+                rating,
+                flagEmoji: flag
+            }, { x, y, width, height });
+        });
+    }, [name, title, rating, flag, onPress]);
 
     // Placeholder flag (small circle) if missing
     const flagDisplay = flag ? (
@@ -107,34 +100,26 @@ const PlayerInfoBlock = memo(({
 
     return (
         <View style={[styles.stripPlayerBlock, align === 'left' ? styles.alignLeft : styles.alignRight]}>
-            <TouchableOpacity
-                activeOpacity={0.7}
-                onPress={handlePress}
-                style={{ position: 'relative' }} // Anchor for toast
-            >
-                {/* Toast Overlay */}
-                <InfoToastCard
-                    visible={toastVisible}
-                    name={name}
-                    title={title}
-                    rating={rating}
-                    flagEmoji={flag}
-                    align={align}
-                />
+            <View ref={touchableRef} collapsable={false}>
+                <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={handlePress}
+                    style={{ position: 'relative' }}
+                >
+                    <View style={[styles.stripNameRow, align === 'right' && { justifyContent: 'flex-end' }]}>
+                        {flagDisplay}
+                        {title && <Capsule variant="title">{title}</Capsule>}
 
-                <View style={[styles.stripNameRow, align === 'right' && { justifyContent: 'flex-end' }]}>
-                    {flagDisplay}
-                    {title && <Capsule variant="title">{title}</Capsule>}
-
-                    <Text style={styles.stripName} numberOfLines={1}>
-                        {name}
-                    </Text>
-                </View>
-                <View style={styles.stripStatsRow}>
-                    <Text style={styles.stripRating}>{rating || '--'}</Text>
-                    <Text style={styles.stripTime}>{formattedClock || '--'}</Text>
-                </View>
-            </TouchableOpacity>
+                        <Text style={styles.stripName} numberOfLines={1}>
+                            {name}
+                        </Text>
+                    </View>
+                    <View style={styles.stripStatsRow}>
+                        <Text style={styles.stripRating}>{rating || '--'}</Text>
+                        <Text style={styles.stripTime}>{formattedClock || '--'}</Text>
+                    </View>
+                </TouchableOpacity>
+            </View>
         </View>
     );
 });
@@ -147,6 +132,7 @@ const PlayerStrip = memo(({
     whiteName: string; whiteTitle?: string; whiteFederation?: string; whiteRating?: number; whiteClock?: string;
     blackName: string; blackTitle?: string; blackFederation?: string; blackRating?: number; blackClock?: string;
     result?: string;
+    onPlayerPress: (data: PlayerData, anchor: LayoutRectangle) => void;
 }) => {
     return (
         <View style={styles.playerStrip}>
@@ -159,6 +145,7 @@ const PlayerStrip = memo(({
                 clock={whiteClock}
                 align="left"
                 isWhite={true}
+                onPress={onPlayerPress}
             />
 
             {/* Center Result */}
@@ -175,6 +162,7 @@ const PlayerStrip = memo(({
                 clock={blackClock}
                 align="right"
                 isWhite={false}
+                onPress={onPlayerPress}
             />
         </View>
     );
@@ -253,6 +241,30 @@ export default function GameScreen({ route, navigation }: Props) {
     const [activeTab, setActiveTab] = useState<TabType>('notation');
     const { width } = useWindowDimensions();
     // Debug state for touch interaction
+
+
+    // TOAST STATE
+    const [toastState, setToastState] = useState<{ visible: boolean; data: PlayerData; anchor: LayoutRectangle | undefined }>({
+        visible: false,
+        data: { name: '' },
+        anchor: undefined
+    });
+    const toastTimerRef = useRef<NodeJS.Timeout>();
+
+    const openPlayerToast = useCallback((data: PlayerData, anchor: LayoutRectangle) => {
+        // 1. Clear existing
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+
+        // 2. Show new
+        setToastState({ visible: true, data, anchor });
+
+        // 3. Auto-hide
+        toastTimerRef.current = setTimeout(() => {
+            setToastState(prev => ({ ...prev, visible: false }));
+        }, 2500);
+    }, []);
+
+
 
 
 
