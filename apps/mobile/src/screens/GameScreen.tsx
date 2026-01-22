@@ -16,6 +16,7 @@ import soundManager from '../utils/soundManager';
 import { Chess } from 'chess.js';
 import NotationView, { Move } from '../components/NotationView';
 import EngineView from '../components/EngineView';
+import InfoToastCard from '../components/InfoToastCard';
 import { usePollTournamentGames } from '../hooks/usePollTournamentGames';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 // import { VolumeManager, VolumeResult } from 'react-native-volume-manager';
@@ -73,6 +74,30 @@ const PlayerInfoBlock = memo(({
     const flag = getFlagEmoji(federation);
     const formattedClock = formatClock(clock || '');
 
+    // Toast Interaction Logic
+    const [toastVisible, setToastVisible] = useState(false);
+    const timeoutRef = useRef<NodeJS.Timeout>();
+
+    const handlePress = useCallback(() => {
+        // Clear existing timer if any
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+
+        // Show visibility
+        setToastVisible(true);
+
+        // Auto-hide after 2.5s
+        timeoutRef.current = setTimeout(() => {
+            setToastVisible(false);
+        }, 2500);
+    }, []);
+
+    // Cleanup
+    useEffect(() => {
+        return () => {
+            if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        };
+    }, []);
+
     // Placeholder flag (small circle) if missing
     const flagDisplay = flag ? (
         <Text style={styles.stripFlag}>{flag}</Text>
@@ -82,18 +107,34 @@ const PlayerInfoBlock = memo(({
 
     return (
         <View style={[styles.stripPlayerBlock, align === 'left' ? styles.alignLeft : styles.alignRight]}>
-            <View style={[styles.stripNameRow, align === 'right' && { justifyContent: 'flex-end' }]}>
-                {flagDisplay}
-                {title && <Capsule variant="title">{title}</Capsule>}
+            <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={handlePress}
+                style={{ position: 'relative' }} // Anchor for toast
+            >
+                {/* Toast Overlay */}
+                <InfoToastCard
+                    visible={toastVisible}
+                    name={name}
+                    title={title}
+                    rating={rating}
+                    flagEmoji={flag}
+                    align={align}
+                />
 
-                <Text style={styles.stripName} numberOfLines={1}>
-                    {name}
-                </Text>
-            </View>
-            <View style={styles.stripStatsRow}>
-                <Text style={styles.stripRating}>{rating || '--'}</Text>
-                <Text style={styles.stripTime}>{formattedClock || '--'}</Text>
-            </View>
+                <View style={[styles.stripNameRow, align === 'right' && { justifyContent: 'flex-end' }]}>
+                    {flagDisplay}
+                    {title && <Capsule variant="title">{title}</Capsule>}
+
+                    <Text style={styles.stripName} numberOfLines={1}>
+                        {name}
+                    </Text>
+                </View>
+                <View style={styles.stripStatsRow}>
+                    <Text style={styles.stripRating}>{rating || '--'}</Text>
+                    <Text style={styles.stripTime}>{formattedClock || '--'}</Text>
+                </View>
+            </TouchableOpacity>
         </View>
     );
 });
