@@ -1194,8 +1194,8 @@ const styles = StyleSheet.create({
     },
     stripPlayerBlock: {
         flex: 1,
-        minWidth: 0,
-        gap: 0, // Very tight rows
+        minWidth: 0, // Allow shrinking below content size to force truncation
+        gap: 0,
     },
     alignLeft: {
         alignItems: 'flex-start',
@@ -1259,6 +1259,7 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: 'rgba(255, 255, 255, 0.1)',
         marginHorizontal: 4,
+        flexShrink: 0, // Prevent center pill from shrinking
     },
     stripCenterText: {
         fontSize: 13,
