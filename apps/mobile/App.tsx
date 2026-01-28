@@ -10,12 +10,22 @@ import FavouritePlayersScreen from './src/screens/FavouritePlayersScreen';
 import ChooseCountryScreen from './src/screens/ChooseCountryScreen';
 import BoardDesignScreen from './src/screens/BoardDesignScreen';
 import HelpScreen from './src/screens/HelpScreen';
+import { TopPlayersScreen, ContactScreen, OrganizerScreen } from './src/screens/PlaceholderScreens';
 import type { RootStackParamList } from './src/navigation/types';
 import { SettingsProvider } from './src/contexts/SettingsContext';
 
+import { prewarmMemoryCache } from './src/cache/memoryCache';
+import { TATA_STEEL_2026_SLUG } from './src/services/tataSteel';
+
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
+import { resolveTournamentKey } from './src/utils/resolveTournamentKey';
+
+// Prewarm Tata Steel cache as early as possible (fire and forget)
+prewarmMemoryCache(resolveTournamentKey({ slug: TATA_STEEL_2026_SLUG }));
+
 export default function App() {
+
   console.log('[apps/mobile]', coreHello(), CORE_VERSION);
 
   return (
@@ -36,6 +46,9 @@ export default function App() {
           <Stack.Screen name="ChooseCountry" component={ChooseCountryScreen} />
           <Stack.Screen name="BoardDesign" component={BoardDesignScreen} />
           <Stack.Screen name="Help" component={HelpScreen} />
+          <Stack.Screen name="TopPlayers" component={TopPlayersScreen} />
+          <Stack.Screen name="Contact" component={ContactScreen} />
+          <Stack.Screen name="Organizer" component={OrganizerScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     </SettingsProvider>

@@ -27,6 +27,17 @@ const PlayerProfileToast = memo(({ visible, data, anchorLayout }: PlayerProfileT
     const insets = useSafeAreaInsets();
     const opacity = useRef(new Animated.Value(0)).current;
 
+    // Safely track opacity value
+    const opacityRef = useRef(0);
+    useEffect(() => {
+        const id = opacity.addListener(({ value }) => {
+            opacityRef.current = value;
+        });
+        return () => {
+            opacity.removeListener(id);
+        };
+    }, [opacity]);
+
     // Scale animation pop-in
     const scale = useRef(new Animated.Value(0.9)).current;
 
@@ -112,7 +123,7 @@ const PlayerProfileToast = memo(({ visible, data, anchorLayout }: PlayerProfileT
         };
     }, [anchorLayout, windowWidth, windowHeight, insets]);
 
-    if (!visible && opacity['_value'] === 0) return null; // Optimization? Actually pointerEvents box-none handles it usually but safe to render null if fully hidden/unmounted logic is preferred. 
+    if (!visible && opacityRef.current === 0) return null; // Optimization? Actually pointerEvents box-none handles it usually but safe to render null if fully hidden/unmounted logic is preferred. 
     // However, keeping it mounted with 0 opacity allows animation out. 
     // We'll rely on global `visible` prop to control mounting in parent if needed, or just layout here.
 

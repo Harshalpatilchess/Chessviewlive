@@ -1,8 +1,18 @@
 export type RootStackParamList = {
-    Tournaments: undefined;
+    Tournaments: {
+        filter?: 'ALL' | 'ONGOING' | 'FINISHED' | 'UPCOMING';
+    };
     TournamentBoards: {
         tournamentSlug: string;
         tournamentName: string;
+        tournamentId: string;
+        snapshot?: {
+            name: string;
+            status: string;
+            rounds: number;
+        };
+        initialRound?: number;
+        initialPreviewMap?: Record<string, any>;
     };
     TournamentLeaderboard: {
         tournamentSlug: string;
@@ -37,4 +47,7 @@ export type RootStackParamList = {
     ChooseCountry: undefined;
     BoardDesign: undefined;
     Help: undefined;
+    TopPlayers: undefined;
+    Contact: undefined;
+    Organizer: undefined;
 };

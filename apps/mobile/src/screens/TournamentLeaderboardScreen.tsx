@@ -1,21 +1,14 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity } from 'react-native';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { getTournamentGames, type GameSummary } from '@chessview/core';
 import { broadcastTheme } from '../theme/broadcastTheme';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
+import { usePollTournamentGames } from '../hooks/usePollTournamentGames';
+import { computeStandingsFromGames } from '../utils/standings';
+import { useMemo, useEffect } from 'react';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'TournamentLeaderboard'>;
-
-interface PlayerStanding {
-    rank: number;
-    name: string;
-    title?: string;
-    federation?: string;
-    rating?: number;
-    points: number;
-}
 
 // Helper function to convert country code to flag emoji
 function getFlagEmoji(countryCode?: string): string {
@@ -27,68 +20,27 @@ function getFlagEmoji(countryCode?: string): string {
     return String.fromCodePoint(...codePoints);
 }
 
-// Compute standings from game results
-function computeStandings(games: GameSummary[]): PlayerStanding[] {
-    const playerScores = new Map<string, { score: number; title?: string; federation?: string; rating?: number }>();
-
-    // Aggregate points for each player
-    games.forEach(game => {
-        // White player
-        if (!playerScores.has(game.whiteName)) {
-            playerScores.set(game.whiteName, {
-                score: 0,
-                title: game.whiteTitle,
-                federation: game.whiteFederation,
-                rating: game.whiteRating,
-            });
-        }
-        const whitePlayer = playerScores.get(game.whiteName)!;
-        if (game.whiteResult === '1') whitePlayer.score += 1;
-        else if (game.whiteResult === '½') whitePlayer.score += 0.5;
-
-        // Black player
-        if (!playerScores.has(game.blackName)) {
-            playerScores.set(game.blackName, {
-                score: 0,
-                title: game.blackTitle,
-                federation: game.blackFederation,
-                rating: game.blackRating,
-            });
-        }
-        const blackPlayer = playerScores.get(game.blackName)!;
-        if (game.blackResult === '1') blackPlayer.score += 1;
-        else if (game.blackResult === '½') blackPlayer.score += 0.5;
-    });
-
-    // Convert to array and sort
-    const standings = Array.from(playerScores.entries())
-        .map(([name, data]) => ({
-            name,
-            title: data.title,
-            federation: data.federation,
-            rating: data.rating,
-            points: data.score,
-            rank: 0, // Will be set after sorting
-        }))
-        .sort((a, b) => {
-            // Sort by points descending
-            if (b.points !== a.points) return b.points - a.points;
-            // Tie-break: alphabetical by name
-            return a.name.localeCompare(b.name);
-        });
-
-    // Assign ranks
-    standings.forEach((player, index) => {
-        player.rank = index + 1;
-    });
-
-    return standings;
-}
-
 export default function TournamentLeaderboardScreen({ route, navigation }: Props) {
     const { tournamentSlug, tournamentName } = route.params;
-    const games = getTournamentGames(tournamentSlug);
-    const standings = computeStandings(games);
+
+    // 1. Reactive Data Source
+    const { games, refresh, isRefreshing } = usePollTournamentGames(tournamentSlug);
+
+    // 2. Derive Standings
+    const standings = useMemo(() => {
+        return computeStandingsFromGames(games);
+    }, [games]);
+
+    // 3. Optional: Logging for Verification
+    useEffect(() => {
+        if (__DEV__) {
+            console.log(`[Leaderboard] Recomputed for ${games.length} games.`);
+            console.log(`[Leaderboard] Total players in standings: ${standings.length}`);
+            if (standings.length > 0) {
+                console.log('[Leaderboard] Top 3:', standings.slice(0, 3).map(p => `${p.rank}. ${p.name} (${p.points})`));
+            }
+        }
+    }, [standings, games.length]);
 
     // Check if we have any data
     const hasData = standings.length > 0 && standings.some(p => p.points > 0);
@@ -131,6 +83,13 @@ export default function TournamentLeaderboardScreen({ route, navigation }: Props
                 <FlatList
                     data={standings}
                     keyExtractor={(item) => item.name}
+                    refreshControl={
+                        <RefreshControl
+                            refreshing={isRefreshing}
+                            onRefresh={refresh}
+                            tintColor={broadcastTheme.colors.sky400}
+                        />
+                    }
                     renderItem={({ item }) => (
                         <View style={styles.row}>
                             <Text style={[styles.cellText, styles.colRank]}>{item.rank}</Text>

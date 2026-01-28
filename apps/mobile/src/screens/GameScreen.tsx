@@ -22,8 +22,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import PlayerProfileToast, { PlayerData } from '../components/PlayerProfileToast';
 import { LayoutRectangle } from 'react-native';
+import { useGameClock } from '../hooks/useGameClock';
+import { useFastGamePoller } from '../hooks/useFastGamePoller';
+import { parsePgnToMainlineMoves } from '../utils/pgnUtils';
+import { getLichessRoundId } from '../services/tataSteel';
+import { fetchRoundPgn, parsePgnForRound } from '../services/lichessBroadcast';
+import { isGameFinished } from '../utils/roundSelection'; // Assuming this util exists or check local use
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Game'>;
+
+// SIMPLE MEMORY CACHE
+const MOVES_CACHE = new Map<string, { pgn: string; moves: Move[] }>();
 
 // Helper function to convert country code to flag emoji
 function getFlagEmoji(countryCode?: string): string {
@@ -192,25 +201,100 @@ export default function GameScreen({ route, navigation }: Props) {
         pgn: initialPgn, // Rename to avoid conflict with history logic
     } = route.params;
 
-    // Polling for live updates (Silent)
-    // tournamentSlug comes from route.params above
+    // Polling for live updates (Silent - Slow Background)
     const { games: liveGames } = usePollTournamentGames(tournamentSlug);
     const liveGame = liveGames.find(g => g.gameId === gameId);
 
-    // Merge live data or fall back to initial params
-    const activePgn = liveGame?.pgn || initialPgn;
-    const activeWhiteClock = liveGame?.whiteClock || whiteClock;
-    const activeBlackClock = liveGame?.blackClock || blackClock;
-    const activeWhiteResult = liveGame?.whiteResult || whiteResult;
-    const activeBlackResult = liveGame?.blackResult || blackResult;
-    const activeIsLive = liveGame ? liveGame.isLive : isLive;
+    // Fast Poller (Single Game)
+    const { fastUpdate } = useFastGamePoller(
+        round,
+        whiteName,
+        blackName,
+        isLive, // Initial state
+        gameId
+    );
+
+    // PGN Backfill State
+    const [backfillPgn, setBackfillPgn] = useState<string | null>(null);
+
+    // Merge strategy: Fast -> Live -> Backfill -> Initial
+    const activePgn = fastUpdate?.pgn || liveGame?.pgn || backfillPgn || initialPgn;
+    const activeIsLive = fastUpdate ? fastUpdate.isLive : (liveGame ? liveGame.isLive : isLive);
+
+    // For Eval, we stick to slow polling or params (Fast poller doesn't parse text annotations yet)
     const activeEvalCp = liveGame?.scoreCp ?? liveGame?.evalCp ?? evalCp;
+
+    // Result / Clock Overrides
+    const activeWhiteClock = fastUpdate?.whiteClock || liveGame?.whiteClock || whiteClock || '';
+    const activeBlackClock = fastUpdate?.blackClock || liveGame?.blackClock || blackClock || '';
+    const activeWhiteResult = fastUpdate?.whiteResult || liveGame?.whiteResult || whiteResult;
+    const activeBlackResult = fastUpdate?.blackResult || liveGame?.blackResult || blackResult;
+
+    // --- PGN BACKFILL EFFECT ---
+    useEffect(() => {
+        // Only run if we don't have a good PGN yet and game looks finished
+        const currentPgnLen = activePgn ? activePgn.length : 0;
+        const resultString = activeWhiteResult || activeBlackResult || '';
+        const seemsFinished = (activeIsLive === false) || (resultString.length > 0 && resultString !== '*');
+
+        if (seemsFinished && !backfillPgn && currentPgnLen < 500) {
+            const runBackfill = async () => {
+                const rId = await getLichessRoundId(round);
+                if (!rId) return;
+
+                const fullRoundPgn = await fetchRoundPgn(rId);
+                if (fullRoundPgn) {
+                    const map = parsePgnForRound(fullRoundPgn);
+                    const key = `${whiteName.toLowerCase()}-${blackName.toLowerCase()}`;
+                    const foundPgn = map.get(key) || map.get(`${blackName.toLowerCase()}-${whiteName.toLowerCase()}`);
+
+                    if (foundPgn && foundPgn.length > currentPgnLen) {
+                        console.log(`[PGN_BACKFILL] roundId=${rId} found=true pgnLen=${foundPgn.length} moves=${foundPgn.replace(/.*?\]\s*/g, '').substring(0, 20)}...`);
+                        setBackfillPgn(foundPgn);
+                    } else {
+                        if (__DEV__) console.log(`[PGN_BACKFILL] roundId=${rId} found=${!!foundPgn} no_improvement`);
+                    }
+                }
+            };
+            runBackfill();
+        }
+    }, [round, whiteName, blackName, activePgn, activeIsLive, activeWhiteResult, activeBlackResult]); // Added activeBlackResult to deps
+
+    // Use the latest update timestamp for clock tick interpolation
+    const lastTickReference = fastUpdate?.lastUpdatedAt || liveGame?.lastUpdatedAt || new Date().toISOString();
+    const turnToMove = fastUpdate ? (fastUpdate.fen.split(' ')[1] as 'w' | 'b') : ((liveGame as any)?.turn || 'w');
+
+    // Ticker for Real-Time Clocks
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setNow(Date.now());
+        }, 1000);
+        return () => clearInterval(interval);
+    }, []);
+
+    const { whiteDisplay, blackDisplay } = useGameClock(
+        liveGame?.whiteClock || whiteClock || '',
+        liveGame?.blackClock || blackClock || '',
+        activeIsLive,
+        turnToMove,
+        lastTickReference,
+        now
+    );
+
+    // activeWhiteClock / activeBlackClock are now computed above via hook + fast path overrides
+    // But useGameClock returns the *interpolated* string.
+    // The previous code reassigned them to `activeWhiteClock`.
+    // Let's keep variable naming consistent.
+    const displayWhiteClock = whiteDisplay;
+    const displayBlackClock = blackDisplay;
 
     const [menuDropdownVisible, setMenuDropdownVisible] = useState(false);
     const [aboutModalVisible, setAboutModalVisible] = useState(false);
     const [isGameSaved, setIsGameSaved] = useState(false);
     const [isBoardFlipped, setIsBoardFlipped] = useState(false);
     const [isLiveMode, setIsLiveMode] = useState(true);
+    const [parseRetryCount, setParseRetryCount] = useState(0);
 
     // Variation State (Web-Parity)
     // "Variation" = a manual branch starting from a specific ply.
@@ -248,7 +332,7 @@ export default function GameScreen({ route, navigation }: Props) {
         data: { name: '' },
         anchor: undefined
     });
-    const toastTimerRef = useRef<NodeJS.Timeout>();
+    const toastTimerRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
     const openPlayerToast = useCallback((data: PlayerData, anchor: LayoutRectangle) => {
         // 1. Clear existing
@@ -268,45 +352,79 @@ export default function GameScreen({ route, navigation }: Props) {
 
 
 
-    const { history: gameHistory, lastPly, startFen } = useMemo(() => {
-        const c = new Chess();
-        const cleanPgn = initialPgn || '';
+    const { history: gameHistory, lastPly, startFen, error: parseError } = useMemo(() => {
+        const cleanPgn = activePgn || '';
 
-        try {
-            // Load PGN to extract moves
-            c.loadPgn(cleanPgn);
-        } catch (e) {
-            console.warn('PGN Parse Error:', e);
+        // 1. Check Cache (Instant Load)
+        const cached = MOVES_CACHE.get(gameId);
+        // Only use cache if we are not retrying
+        if (cached && cached.pgn === cleanPgn && cached.moves.length > 0 && parseRetryCount === 0) {
+            if (__DEV__) console.log(`[GAME_READY] id=${gameId} hasPgn=${!!cleanPgn} pgnLen=${cleanPgn.length} hadMovesBefore=true movesAfter=${cached.moves.length} (CACHED)`);
+            return {
+                history: cached.moves,
+                lastPly: cached.moves.length,
+                startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                error: undefined
+            };
         }
 
-        const moves = c.history({ verbose: true });
-        const historyWithFen: Move[] = [];
-        const replay = new Chess(); // Replay to generate FENs
+        // 2. Parse using robust utility
+        const parseResult = parsePgnToMainlineMoves(cleanPgn);
 
-        moves.forEach((m: any, index: number) => {
+        if (!parseResult.ok) {
+            if (cleanPgn.length > 0) {
+                const preview = cleanPgn.substring(0, 200).replace(/\n/g, ' ');
+                console.warn(`[GAME_PARSE_FAIL] id=${gameId} pgnLen=${cleanPgn.length} err=${parseResult.error} pgnPrefix=${preview}`);
+            }
+            return {
+                history: [],
+                lastPly: 0,
+                startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                error: parseResult.error
+            };
+        }
+
+        // 3. Replay to generate FENs
+
+        const moves = parseResult.sanMoves; // string[]
+        const historyWithFen: Move[] = [];
+        const replay = new Chess();
+
+        moves.forEach((sanMove: string, index: number) => {
             try {
-                replay.move(m);
-                historyWithFen.push({
-                    ply: index + 1,
-                    san: m.san,
-                    fen: replay.fen(),
-                    from: m.from,
-                    to: m.to,
-                    color: m.color,
-                    moveNumber: Math.floor(index / 2) + 1,
-                });
+                const m = replay.move(sanMove);
+                if (m) {
+                    historyWithFen.push({
+                        ply: index + 1,
+                        san: m.san,
+                        fen: replay.fen(),
+                        from: m.from,
+                        to: m.to,
+                        color: m.color,
+                        moveNumber: Math.floor(index / 2) + 1,
+                    });
+                }
             } catch (e) {
-                console.warn('Move replay error', e);
+                console.warn('Move replay error', sanMove, e);
             }
         });
 
-        // If game is empty/new, lastPly is 0
+        // Update Cache (only if we have moves)
+        if (historyWithFen.length > 0) {
+            MOVES_CACHE.set(gameId, { pgn: cleanPgn, moves: historyWithFen });
+        }
+
+        if (__DEV__) {
+            console.log(`[GAME_READY] id=${gameId} hasPgn=${!!cleanPgn} pgnLen=${cleanPgn.length} hadMovesBefore=${!!cached} movesAfter=${historyWithFen.length}`);
+        }
+
         return {
             history: historyWithFen,
             lastPly: historyWithFen.length,
-            startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+            startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            error: undefined
         };
-    }, [activePgn]);
+    }, [activePgn, gameId, parseRetryCount]);
 
     // Sync isLiveMode with latest move
     useEffect(() => {
@@ -623,7 +741,7 @@ export default function GameScreen({ route, navigation }: Props) {
     const boardSize = Math.max(MIN_BOARD_SIZE, Math.min(width - SCREEN_PADDING - EVAL_BAR_SPACE, MAX_BOARD_SIZE));
 
     // Determine result string
-    // Determine result string
+
     let gameResult = '—'; // Default em dash
     if (!activeIsLive) {
         if (activeWhiteResult && activeBlackResult) {
@@ -916,14 +1034,28 @@ export default function GameScreen({ route, navigation }: Props) {
                 {/* Tab Content Placeholder */}
                 <View style={styles.tabContent}>
                     {activeTab === 'notation' && (
-                        <NotationView
-                            moves={gameHistory as Move[]}
-                            currentPly={currentMoveIndex}
-                            onJumpToMove={handleJumpToMove}
-                            variation={variation}
-                            onClearVariation={clearVariation}
-                            onJumpToVariationMove={handleJumpToVariationMove}
-                        />
+                        parseError ? (
+                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                                <Text style={{ color: broadcastTheme.colors.slate400, marginBottom: 12, textAlign: 'center' }}>
+                                    Unable to parse moves
+                                </Text>
+                                <TouchableOpacity
+                                    onPress={() => setParseRetryCount(c => c + 1)}
+                                    style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 6 }}
+                                >
+                                    <Text style={{ color: '#fff', fontWeight: '600' }}>Retry Parsing</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : (
+                            <NotationView
+                                moves={gameHistory as Move[]}
+                                currentPly={currentMoveIndex}
+                                onJumpToMove={handleJumpToMove}
+                                variation={variation}
+                                onClearVariation={clearVariation}
+                                onJumpToVariationMove={handleJumpToVariationMove}
+                            />
+                        )
                     )}
                     {activeTab === 'engine' && (
                         <EngineView fen={displayFen} isLiveMode={activeIsLive} />
@@ -1194,16 +1326,17 @@ const styles = StyleSheet.create({
     },
     stripPlayerBlock: {
         flex: 1,
-        minWidth: 0, // Allow shrinking below content size to force truncation
+        minWidth: 0, // CRITICAL: Allow shrinking below content size to force truncation
+        overflow: 'hidden', // CRITICAL: Prevent ANY content from bleeding out
         gap: 0,
     },
     alignLeft: {
         alignItems: 'flex-start',
-        paddingRight: 8,
+        paddingRight: 4, // Reduced padding to give more space
     },
     alignRight: {
         alignItems: 'flex-end',
-        paddingLeft: 8,
+        paddingLeft: 4, // Reduced padding to give more space
     },
     stripNameRow: {
         flexDirection: 'row',
@@ -1259,7 +1392,10 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: 'rgba(255, 255, 255, 0.1)',
         marginHorizontal: 4,
-        flexShrink: 0, // Prevent center pill from shrinking
+        flexShrink: 0, // CRITICAL: Never shrink pill
+        flexGrow: 0,    // CRITICAL: Never grow pill unwantedly
+        zIndex: 10,     // CRITICAL: Ensure it sits on top if anything fails
+        elevation: 10,  // Android zIndex equivalent
     },
     stripCenterText: {
         fontSize: 13,

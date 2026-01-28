@@ -16,6 +16,9 @@ export const colors = {
 
     // Status
     live: '#ff4444',
+    ongoing: '#f97316', // Orange
+    upcoming: '#4a9eff', // Blue
+    completed: '#22c55e', // Green
     finished: '#444',
 
     // Borders

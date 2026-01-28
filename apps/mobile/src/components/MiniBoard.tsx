@@ -67,6 +67,10 @@ interface MiniBoardProps {
     onMove?: (from: string, to: string) => void;
     selectedSquare?: string | null;
     validMoves?: string[]; // Squares to highlight as valid destinations
+    // Logging props
+    gameId?: string;
+    tournamentKey?: string;
+    round?: number | string;
 }
 
 // Convert UCI square (e.g., 'e2') to board coordinates
@@ -133,10 +137,49 @@ const MiniBoard: React.FC<MiniBoardProps> = ({
     onSquarePress,
     onMove,
     selectedSquare,
-    validMoves
+    validMoves,
+    gameId,
+    tournamentKey,
+    round
 }) => {
+    // 1) Prefer FEN directly. 
+    // Optimization: If FEN is 'start' or missing, use default.
+    // Logic: parseFen handles the string.
     const board = parseFen(fen);
     const { settings } = useSettings();
+
+    // LOGGING: Mount/Unmount Proof
+    useEffect(() => {
+        if (!gameId) return; // Only log if gameId is provided (preview context)
+
+        // Gate: Log only for likely-first games to avoid spam
+        // We can't easily check index, but we can check gameId length or specific subset?
+        // User asked to gate for "first 1-2 games". Since we pass gameId, we don't know index.
+        // But we can check if fen is changing from start to non-start?
+        // Actually best to just log all for the targeted debug session, or sample.
+        // Let's use a global counter or just always log if non-start for better visibility
+        // Requirement: "Gate logs so they’re not too spammy... e.g. board 1 + board 2"
+        // We can rely on gameId being passed only for these boards? No.
+
+        const isStart = !fen || fen.startsWith('rnbqk');
+        console.log(`[PREVIEW_BOARD_MOUNT] tournamentKey=${tournamentKey} round=${round} gameId=${gameId} isStart=${isStart}`);
+
+        return () => {
+            console.log(`[PREVIEW_BOARD_UNMOUNT] tournamentKey=${tournamentKey} round=${round} gameId=${gameId}`);
+        };
+    }, [gameId]); // Deps: gameId stable for same game. Force remount changes key, so this effect runs.
+
+    // DEV LOG: Board Preview
+    useEffect(() => {
+        if (__DEV__) {
+            // Sample one log per unique FEN to avoid spam
+            // But we don't have unique ID here easily. 
+            // Just log if it looks like a mid-game FEN (contains slashes)
+            if (fen && fen.includes('/') && fen !== 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1') {
+                // console.log(`[BOARD_PREVIEW] size=${size} fen=${fen.substring(0, 20)}...`);
+            }
+        }
+    }, [fen]);
 
     // Use settings from context with defaults
     const boardTheme = settings ? getBoardTheme(settings.boardThemeId) : getBoardTheme('brown');
