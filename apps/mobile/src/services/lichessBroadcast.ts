@@ -83,81 +83,102 @@ interface LichessRoundResponse {
 
 const LICHESS_API_BASE = 'https://lichess.org/api/broadcast';
 
+// Request Deduplication Cache (TTL could be added, but per-session/short-lived is fine for now)
+const BROADCAST_FETCH_CACHE = new Map<string, Promise<BroadcastTournamentData | null>>();
+
 /**
  * Fetch Tournament Metadata (Rounds, Status)
  */
 export async function fetchBroadcastTournament(broadcastId: string): Promise<BroadcastTournamentData | null> {
-    try {
-        const url = `${LICHESS_API_BASE}/${broadcastId}`;
-        if (__DEV__) console.log(`[LichessBroadcast] Fetching ${url}`);
+    if (BROADCAST_FETCH_CACHE.has(broadcastId)) {
+        return BROADCAST_FETCH_CACHE.get(broadcastId)!;
+    }
 
-        const res = await fetch(url, { headers: { Accept: 'application/json' } });
-        if (!res.ok) {
-            console.warn(`[LichessBroadcast] Fetch Tournament failed: ${res.status}`);
-            return null;
-        }
-
-        const text = await res.text();
-        let data: any;
+    const promise = (async () => {
         try {
-            data = JSON.parse(text);
-        } catch (e) {
-            console.warn(`[LichessBroadcast] JSON Parse Error`, e);
-            return null;
-        }
+            const url = `${LICHESS_API_BASE}/${broadcastId}`;
+            if (__DEV__) console.log(`[LichessBroadcast] Fetching ${url}`);
 
-        if (Array.isArray(data)) {
-            console.warn(`[LichessBroadcast] Received array instead of object. Length: ${data.length}`);
-            return null;
-        }
-
-        // Fix: Lichess Broadcast API v2 often uses 'tour' instead of 'tournament'
-        const tour = data.tour || data.tournament;
-        if (!tour || !tour.id) {
-            console.warn(`[LichessBroadcast] Missing tour/tournament.id in response. Keys: ${Object.keys(data).join(',')}`);
-            return null;
-        }
-
-        // Normalize Rounds
-        // 1. Ensure startsAt is in ms (if it's small int like 17xxxxxxxxx its seconds).
-        // 2. Ensure finished is boolean.
-        const roundsRaw = data.rounds || [];
-        const rounds = roundsRaw.map((r: any) => {
-            let startsAtMs = r.startsAt;
-            // Heuristic: if startsAt is unix seconds (e.g. 1737000000), convert to ms
-            if (typeof startsAtMs === 'number' && startsAtMs < 100000000000) {
-                startsAtMs *= 1000;
+            const res = await fetch(url, { headers: { Accept: 'application/json' } });
+            if (!res.ok) {
+                console.warn(`[LichessBroadcast] Fetch Tournament failed: ${res.status}`);
+                return null;
             }
 
-            // Finished: explicit flag, or derive?
-            // For now pass explicit.
+            const text = await res.text();
+            let data: any;
+            try {
+                data = JSON.parse(text);
+            } catch (e) {
+                console.warn(`[LichessBroadcast] JSON Parse Error`, e);
+                return null;
+            }
+
+            if (Array.isArray(data)) {
+                console.warn(`[LichessBroadcast] Received array instead of object. Length: ${data.length}`);
+                return null;
+            }
+
+            const tour = data.tour || data.tournament;
+            if (!tour || !tour.id) {
+                console.warn(`[LichessBroadcast] Missing tour/tournament.id in response. Keys: ${Object.keys(data).join(',')}`);
+                return null;
+            }
+
+            const roundsRaw = data.rounds || [];
+            const rounds = roundsRaw.map((r: any) => {
+                let startsAtMs = r.startsAt;
+                if (typeof startsAtMs === 'number' && startsAtMs < 100000000000) {
+                    startsAtMs *= 1000;
+                }
+                return {
+                    id: r.id,
+                    name: r.name,
+                    slug: r.slug,
+                    url: r.url,
+                    startsAt: startsAtMs,
+                    finished: !!r.finished
+                };
+            });
+
+            if (__DEV__) {
+                const sample = rounds.length > 0
+                    ? `R${extractRoundNumber(rounds[0].name)} start=${rounds[0].startsAt} fin=${rounds[0].finished}`
+                    : 'No rounds';
+                console.log(`[LB_SNAPSHOT_OK] tourId=${tour.id}, roundsLen=${rounds.length}, ${sample}`);
+            }
+
             return {
-                id: r.id,
-                name: r.name,
-                slug: r.slug,
-                url: r.url,
-                startsAt: startsAtMs,
-                finished: !!r.finished
+                id: tour.id,
+                name: tour.name,
+                description: tour.description,
+                rounds
             };
-        });
-
-        if (__DEV__) {
-            const sample = rounds.length > 0
-                ? `R${extractRoundNumber(rounds[0].name)} start=${rounds[0].startsAt} fin=${rounds[0].finished}`
-                : 'No rounds';
-            console.log(`[LB_SNAPSHOT_OK] tourId=${tour.id}, roundsLen=${rounds.length}, ${sample}`);
+        } catch (e) {
+            console.warn(`[LichessBroadcast] Error fetching tournament ${broadcastId}:`, e);
+            return null;
+        } finally {
+            // Optional: Clear cache after some time?
+            // For now, let's keep it to ensure stability within session.
+            // Or render invalidation will re-fetch?
+            // If we want updates, we need to clear it.
+            // Let's clear it after 60 seconds?
+            // setTimeout(() => BROADCAST_FETCH_CACHE.delete(broadcastId), 60000);
         }
+    })();
 
-        return {
-            id: tour.id,
-            name: tour.name,
-            description: tour.description,
-            rounds
-        };
-    } catch (e) {
-        console.warn(`[LichessBroadcast] Error fetching tournament ${broadcastId}:`, e);
-        return null;
-    }
+    BROADCAST_FETCH_CACHE.set(broadcastId, promise);
+
+    // Clear cache on failure to allow retry
+    promise.then(res => {
+        if (!res) BROADCAST_FETCH_CACHE.delete(broadcastId);
+        else {
+            // Basic TTL of 60s to allow refreshing status
+            setTimeout(() => BROADCAST_FETCH_CACHE.delete(broadcastId), 60000);
+        }
+    });
+
+    return promise;
 }
 
 /**

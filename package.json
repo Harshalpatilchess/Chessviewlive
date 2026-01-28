@@ -12,6 +12,14 @@
     "start:web": "npm --workspace apps/web run start",
     "lint:web": "npm --workspace apps/web run lint",
     "dev:engine": "npm --workspace services/engine-service run dev",
-    "dev": "npm run dev:web"
+    "dev": "npm run dev:web",
+    "mobile": "npm --workspace apps/mobile run start",
+    "android": "npm --workspace apps/mobile run android",
+    "ios": "npm --workspace apps/mobile run ios"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0"
   }
 }

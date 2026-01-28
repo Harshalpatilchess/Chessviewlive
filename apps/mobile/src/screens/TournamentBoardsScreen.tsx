@@ -29,6 +29,7 @@ import { loadPreviewCache, getCachedPreview } from '../utils/previewCache';
 import { saveTournamentPreview, saveRoundPreview } from '../cache/previewStore';
 import { getRoundUiCache, saveRoundUiCache } from '../utils/roundUiCache';
 import { resolveTournamentKey } from '../utils/resolveTournamentKey';
+import { resolveRoundId } from '../utils/roundResolver';
 
 
 import { fetchBroadcastTournament, fetchBroadcastRound, BroadcastRoundMeta, fetchRoundPgn, parsePgnForRound } from '../services/lichessBroadcast';
@@ -238,39 +239,30 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
     const [broadcastRounds, setBroadcastRounds] = useState<BroadcastRoundMeta[]>([]);
     const [broadcastGames, setBroadcastGames] = useState<GameSummary[]>([]);
 
-    // Update Round ID Map when broadcast rounds arrive
+    // [UNIVERSAL_CACHE_LOAD] Ensure Round ID and Preview Memory are Loaded
+    // We replace the complex broadcastRounds mapping with our new universal resolver
     useEffect(() => {
-        if (broadcastRounds && broadcastRounds.length > 0) {
-            const map: Record<number, string> = {};
-            broadcastRounds.forEach(r => {
-                // Extract number
-                const rNum = parseInt(r.slug?.match(/(\d+)/)?.[1] || r.name.match(/\d+/)?.[0] || '0', 10);
-                if (rNum > 0 && r.id) map[rNum] = r.id;
+        if (selectedRound && tournamentSlug) {
+            // [ROUND_RESOLVER]
+            // 1. Resolve ID (Handles fetch + cache + logging internally)
+            resolveRoundId(tournamentSlug, selectedRound).then(rId => {
+                if (rId) {
+                    setRoundIdMap(prev => ({ ...prev, [selectedRound]: rId }));
+                    // 2. Pre-warm memory for this round
+                    previewMemory.ensureRoundPreviewInMemory(rId).then(() => {
+                        setPreviewsVersion(v => v + 1);
+                    });
+                } else {
+                    // Fallback for Tata or others if resolver fails but we still want to try?
+                    // If resolve fails, we might still have a chance if we use the Fallback key
+                    const fallbackId = `Fallback:${tournamentSlug}:${selectedRound}`;
+                    previewMemory.ensureRoundPreviewInMemory(fallbackId).then(() => {
+                        setPreviewsVersion(v => v + 1);
+                    });
+                }
             });
-            setRoundIdMap(map);
         }
-    }, [broadcastRounds]);
-
-    // [UNIVERSAL_CACHE_LOAD] Ensure Round Preview Memory is Loaded
-    useEffect(() => {
-        if (selectedRound) {
-            // Priority 1: RoundId
-            if (roundIdMap[selectedRound]) {
-                const rId = roundIdMap[selectedRound];
-                previewMemory.ensureRoundPreviewInMemory(rId).then(() => {
-                    setPreviewsVersion(v => v + 1);
-                });
-            } else {
-                // Priority 2: Fallback (Universal)
-                // We fake a roundID that matches our fallback logic: "Fallback:${tournamentSlug}:${selectedRound}"
-                // The memory logic triggers "previewFenByRound:Fallback:..." which is what we want.
-                const fallbackId = `Fallback:${tournamentSlug}:${selectedRound}`;
-                previewMemory.ensureRoundPreviewInMemory(fallbackId).then(() => {
-                    setPreviewsVersion(v => v + 1);
-                });
-            }
-        }
-    }, [selectedRound, roundIdMap, tournamentSlug]);
+    }, [selectedRound, tournamentSlug]);
 
     const { games: polledGames, refresh, isRefreshing, isHydrated, ensureRoundLoaded, loadingRound, failedRounds } = usePollTournamentGames(tournamentSlug, 15000, pollOptions);
 
@@ -444,14 +436,14 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
         // If we have an initialRound param, we respect it and skip auto-detection override
         if (initialRound) return;
 
-        // Fetch Broadcast Config if possible (Universal Support)
-        // if (tournamentSlug !== TATA_STEEL_2026_SLUG) return; // Removed strict check
-
         // Fetch Broadcast Config
         const loadBroadcast = async () => {
-            // We need the broadcast ID. For Tata Steel 2026 it's known. 
-            // Ideally passed in or looked up.
-            const broadcastId = LICHESS_MASTERS_BROADCAST_ID;
+            // Universal ID Selection
+            let broadcastId = tournamentSlug;
+            if (tournamentSlug === TATA_STEEL_2026_SLUG || tournamentSlug.includes('tata-steel')) {
+                broadcastId = LICHESS_MASTERS_BROADCAST_ID;
+            }
+
             const data = await fetchBroadcastTournament(broadcastId);
 
             if (data && data.rounds && Array.isArray(data.rounds)) {
@@ -499,7 +491,6 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
             }
         };
 
-        loadBroadcast();
         loadBroadcast();
     }, [tournamentSlug, initialRound]);
 
@@ -799,12 +790,12 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
         }
 
         // Diagnostic Log (Once per round view)
-        // [PREVIEW_DIAG]
-        if (hasPreviews) {
+        // [PREVIEW_PIPELINE]
+        if (hasPreviews && appliedCount > 0) {
             if (!hasAttemptedHydration.current.has(sessKey + '_diag')) {
-                const keyType = activeRoundId ? 'primary' : 'fallback';
                 const rid = activeRoundId || 'none';
-                console.log(`[PREVIEW_DIAG] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} cacheApplied=${appliedCount}/${total} didHydrate=no(cached) key=${keyType}`);
+                const pgnUrl = rid !== 'none' ? `https://lichess.org/api/broadcast/round/${rid}.pgn` : 'unknown';
+                console.log(`[PREVIEW_PIPELINE] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} hasCache=${appliedCount}/${total} willHydrate=no pgnUrl=${pgnUrl}`);
                 hasAttemptedHydration.current.add(sessKey + '_diag');
             }
             return;
@@ -816,6 +807,14 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
 
             const doHydrate = async () => {
                 const rid = activeRoundId || 'none';
+                const pgnUrl = rid !== 'none' ? `https://lichess.org/api/broadcast/round/${rid}.pgn` : 'unknown';
+
+                // Log pipeline start
+                if (!hasAttemptedHydration.current.has(sessKey + '_diag')) {
+                    console.log(`[PREVIEW_PIPELINE] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} hasCache=${appliedCount}/${total} willHydrate=yes pgnUrl=${pgnUrl}`);
+                    hasAttemptedHydration.current.add(sessKey + '_diag');
+                }
+
                 console.log(`[PREVIEW_HYDRATE] Triggering one-time hydration for R${selectedRound} (ID: ${rid})`);
 
                 let hydratedCount = 0;
@@ -910,12 +909,12 @@ export default function TournamentBoardsScreen({ route, navigation }: Props) {
                     setPreviewsVersion(v => v + 1);
 
                     if (!hasAttemptedHydration.current.has(sessKey + '_diag')) {
-                        console.log(`[PREVIEW_DIAG] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} cacheApplied=${hydratedCount}/${total} didHydrate=yes key=${keyType}`);
+                        console.log(`[PREVIEW_PIPELINE] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} hasCache=${hydratedCount}/${total} willHydrate=yes(done) pgnUrl=${pgnUrl}`);
                         hasAttemptedHydration.current.add(sessKey + '_diag');
                     }
                 } else {
                     if (!hasAttemptedHydration.current.has(sessKey + '_diag')) {
-                        console.log(`[PREVIEW_DIAG] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} cacheApplied=0/${total} didHydrate=failed key=none`);
+                        console.log(`[PREVIEW_PIPELINE] tKey=${tournamentSlug} round=${selectedRound} roundId=${rid} hasCache=0/${total} willHydrate=failed pgnUrl=${pgnUrl}`);
                         hasAttemptedHydration.current.add(sessKey + '_diag');
                     }
                 }
