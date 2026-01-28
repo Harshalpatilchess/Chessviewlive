@@ -46,3 +46,6 @@ engine-service/node_modules/
 
 # Ignore Next.js build output
 apps/web/.next/
+
+# expo
+.expo/
