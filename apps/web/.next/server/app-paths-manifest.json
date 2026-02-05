@@ -1,6 +1,0 @@
-{
-  "/[tournamentSlug]/page": "app/[tournamentSlug]/page.js",
-  "/api/engine/eval/route": "app/api/engine/eval/route.js",
-  "/api/tournament/live/route": "app/api/tournament/live/route.js",
-  "/page": "app/page.js"
-}
