@@ -8,7 +8,7 @@ import Flag from "@/components/live/Flag";
 import TitleBadge from "@/components/boards/TitleBadge";
 import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
 import { parseBoardIdentifier } from "@/lib/boardId";
-import { buildBroadcastBoardPath } from "@/lib/paths";
+import { buildViewerBoardPath } from "@/lib/paths";
 import { getBoardStatusLabel, normalizeResultValue } from "@/lib/boards/boardStatus";
 import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
 import { getTournamentGameManifest } from "@/lib/tournamentManifest";
@@ -22,6 +22,8 @@ type BoardsNavigationSidebarProps = {
   debugRoundId?: string | null;
   activeRound: number;
   roundNotStarted?: boolean;
+  liveUpdatesEnabled?: boolean;
+  liveUpdatesIntervalMs?: number;
   viewMode?: "pairing" | "leaderboard";
   onViewModeChange?: (nextMode: "pairing" | "leaderboard") => void;
   searchQuery?: string;
@@ -99,6 +101,8 @@ export default function BoardsNavigationSidebar({
   debugRoundId = null,
   activeRound,
   roundNotStarted = false,
+  liveUpdatesEnabled = true,
+  liveUpdatesIntervalMs,
   viewMode,
   onViewModeChange,
   searchQuery,
@@ -197,10 +201,9 @@ export default function BoardsNavigationSidebar({
       );
     });
   }, [normalizedQuery, resolvedLeaderboardRows]);
-  const emptyLabel =
-    (roundNotStarted
-      ? "No boards available for this round yet."
-      : "No players match this search yet.") || "No games found";
+  const emptyLabel = roundNotStarted
+    ? "No boards available for this round yet."
+    : "No players match this search yet.";
   const listMaxHeight = `${LEADERBOARD_MAX_HEIGHT_PX}px`;
   const linkQuery = useMemo(() => {
     if (!searchParams) return "";
@@ -221,6 +224,8 @@ export default function BoardsNavigationSidebar({
   const liveFeedVersion = useTournamentLiveFeed({
     tournamentSlug: liveFeedConfig?.tournamentSlug ?? null,
     round: liveFeedConfig?.round ?? null,
+    enabled: liveUpdatesEnabled,
+    intervalMs: liveUpdatesIntervalMs,
   });
   const resolvedPairingsBoards = useMemo(() => {
     if (!liveFeedConfig) return displayBoards;
@@ -313,7 +318,7 @@ export default function BoardsNavigationSidebar({
           const isFinished = board.status === "final" || Boolean(normalizedResult);
           const statusMode = isFinished ? "replay" : "live";
           const resolvedMode = statusMode;
-          const baseHref = buildBroadcastBoardPath(board.boardId, resolvedMode, tournamentSlug);
+          const baseHref = buildViewerBoardPath(board.boardId, resolvedMode);
           const href = `${baseHref}${linkQuery}`;
           const isSelected = selectedBoardId === board.boardId;
           const rowClass = isSelected

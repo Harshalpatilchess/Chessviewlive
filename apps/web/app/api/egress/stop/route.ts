@@ -7,16 +7,12 @@ function reqEnv(name: string) {
   return v;
 }
 
-const LIVEKIT_URL = reqEnv('NEXT_PUBLIC_LIVEKIT_URL').replace(/^wss?:\/\//, 'https://');
-const LIVEKIT_API_KEY = reqEnv('LIVEKIT_API_KEY');
-const LIVEKIT_API_SECRET = reqEnv('LIVEKIT_API_SECRET');
-const ADMIN_SECRET = reqEnv('ADMIN_SECRET');
-
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const secret = url.searchParams.get('secret') || '';
-    if (secret !== ADMIN_SECRET) {
+    const adminSecret = reqEnv('ADMIN_SECRET');
+    if (secret !== adminSecret) {
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
     const egressId = url.searchParams.get('egressId');
@@ -24,7 +20,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'missing egressId' }, { status: 400 });
     }
 
-    const ec = new EgressClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+    const livekitUrl = reqEnv('NEXT_PUBLIC_LIVEKIT_URL').replace(/^wss?:\/\//, 'https://');
+    const livekitApiKey = reqEnv('LIVEKIT_API_KEY');
+    const livekitApiSecret = reqEnv('LIVEKIT_API_SECRET');
+    const ec = new EgressClient(livekitUrl, livekitApiKey, livekitApiSecret);
     const info = await ec.stopEgress(egressId);
 
     return NextResponse.json({ ok: true, info });

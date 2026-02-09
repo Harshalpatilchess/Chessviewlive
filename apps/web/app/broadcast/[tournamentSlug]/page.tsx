@@ -9,22 +9,25 @@ import RoundTextDropdown from "@/components/boards/RoundTextDropdown";
 import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
 import { buildBoardIdentifier, normalizeTournamentSlug } from "@/lib/boardId";
 import { BROADCASTS, getBroadcastTournament } from "@/lib/broadcasts/catalog";
-import { pgnToPlies, pliesToFenAt } from "@/lib/chess/pgn";
+import { deriveFenFromPgn } from "@/lib/chess/pgnServer";
 import { getWorldCupPgnForBoard } from "@/lib/demoPgns";
 import { getMiniEvalCp } from "@/lib/miniEval";
 import { fetchLichessBroadcastRound, fetchLichessBroadcastTournament } from "@/lib/sources/lichessBroadcast";
 import { probeLiveChessCloud } from "@/lib/sources/livechesscloud";
 import { DEFAULT_ROUND, getTournamentConfig } from "@/lib/tournamentCatalog";
+import { getTournamentImageBySlug, resolveTournamentThumbnail } from "@/lib/tournamentImages";
 import {
   getTournamentRoundEntries,
   getTournamentRounds,
+  type FideTitle,
   type TournamentGame,
+  type TournamentRoundEntry,
 } from "@/lib/tournamentManifest";
 import BroadcastHubSidebar from "./BroadcastHubSidebar";
 
 type TournamentOverviewPageProps = {
   params: Promise<{ tournamentSlug: string }>;
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
 const resolveParam = (value?: string | string[]) => {
@@ -61,30 +64,65 @@ const parsePageParam = (value?: string) => {
   return Math.floor(parsed);
 };
 
+const normalizeFideTitle = (value?: string | null): FideTitle | null => {
+  if (!value) return null;
+  const candidate = value.trim().toUpperCase();
+  if (
+    candidate === "GM" ||
+    candidate === "IM" ||
+    candidate === "FM" ||
+    candidate === "CM" ||
+    candidate === "WGM" ||
+    candidate === "WIM" ||
+    candidate === "WFM" ||
+    candidate === "WCM"
+  ) {
+    return candidate as FideTitle;
+  }
+  return null;
+};
+
 const DEFAULT_START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-const buildPreviewFen = (game: TournamentGame | null, tournamentSlug: string, boardNumber: number) => {
-  if (!game) return DEFAULT_START_FEN;
-  if (game.finalFen) return game.finalFen;
+const buildPreviewFen = (game: TournamentGame | null, tournamentSlug: string, boardNumber: number): string | null => {
+  if (!game) return null;
+  if (typeof game.finalFen === "string" && game.finalFen.trim()) return game.finalFen;
   if (Array.isArray(game.moveList) && game.moveList.length > 0) {
     const chess = new Chess();
+    let applied = 0;
     for (const move of game.moveList) {
       try {
-        chess.move(move, { sloppy: true });
+        const result = chess.move(move, { strict: false });
+        if (!result) break;
+        applied += 1;
       } catch {
         break;
       }
     }
-    return chess.fen();
+    if (applied > 0) return chess.fen();
   }
   if (tournamentSlug === "worldcup2025") {
     const pgn = getWorldCupPgnForBoard(boardNumber);
-    const plies = pgnToPlies(pgn);
-    if (plies.length > 0) {
-      return pliesToFenAt(plies, plies.length - 1);
+    const parsed = deriveFenFromPgn(pgn);
+    if (parsed.fen && parsed.movesAppliedCount > 0) {
+      return parsed.fen;
     }
   }
-  return DEFAULT_START_FEN;
+  const normalizedResult = normalizeResultValue(game.result);
+  const hasStartedSignal =
+    game.status === "live" ||
+    game.status === "final" ||
+    normalizedResult === "*" ||
+    Boolean(normalizedResult && normalizedResult !== "*") ||
+    Number.isFinite(Number(game.whiteTimeMs ?? NaN)) ||
+    Number.isFinite(Number(game.blackTimeMs ?? NaN)) ||
+    Boolean(game.sideToMove) ||
+    Number.isFinite(Number(game.evaluation ?? NaN));
+  const explicitNoMoves = Array.isArray(game.moveList) && game.moveList.length === 0 && !hasStartedSignal;
+  if (game.status === "scheduled" || explicitNoMoves) {
+    return DEFAULT_START_FEN;
+  }
+  return null;
 };
 
 const normalizeResultValue = (value?: string | null) => {
@@ -96,6 +134,35 @@ const normalizeResultValue = (value?: string | null) => {
   if (compact.includes("\u00bd")) return "1/2-1/2";
   if (compact === "1/2-1/2") return "1/2-1/2";
   return compact;
+};
+
+const isGameLive = (game: TournamentGame | null) => {
+  if (!game) return false;
+  const normalizedResult = normalizeResultValue(game.result);
+  if (normalizedResult === "*") return true;
+  return game.status === "live";
+};
+
+const isGameFinished = (game: TournamentGame | null) => {
+  if (!game) return false;
+  const normalizedResult = normalizeResultValue(game.result);
+  if (normalizedResult && normalizedResult !== "*") return true;
+  return game.status === "final";
+};
+
+const selectAutoRoundFromManifest = (tournamentSlug: string, rounds: number[]) => {
+  if (!rounds.length) return null;
+  let latestLive: number | null = null;
+  let latestFinished: number | null = null;
+  rounds.forEach(round => {
+    const entries = getTournamentRoundEntries(tournamentSlug, round);
+    if (entries.length === 0) return;
+    const hasLive = entries.some(entry => isGameLive(entry.game));
+    const allFinished = entries.every(entry => isGameFinished(entry.game));
+    if (hasLive) latestLive = round;
+    if (allFinished) latestFinished = round;
+  });
+  return latestLive ?? latestFinished;
 };
 
 const isBoardFinished = (entry: BoardNavigationEntry) => {
@@ -117,6 +184,13 @@ const formatTournamentName = (slug: string) =>
     .split("-")
     .map(word => (word ? `${word[0]?.toUpperCase() ?? ""}${word.slice(1)}` : ""))
     .join(" ");
+
+const normalizeTournamentTitle = (value: string) =>
+  value
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\s*-\s*/g, " - ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const normalizeBroadcastStatus = (
   value?: string | null,
@@ -160,20 +234,21 @@ export default async function TournamentOverviewPage({
   params,
   searchParams,
 }: TournamentOverviewPageProps) {
+  const resolvedSearchParams = await searchParams;
   const resolvedParams = await params;
   const rawSlug = resolvedParams?.tournamentSlug ?? "";
   const trimmedSlug = rawSlug.trim();
   const normalizedSlug = normalizeTournamentSlug(trimmedSlug);
-  const roundParam = resolveParam(searchParams?.round);
-  const roundIdParam = resolveParam(searchParams?.roundId);
-  const modeParam = resolveParam(searchParams?.mode);
-  const rawStatusParam = searchParams?.status;
-  const statusParam = resolveParam(searchParams?.status);
-  const searchParam = resolveParam(searchParams?.search);
-  const perParam = resolveParam(searchParams?.per);
-  const pageParam = resolveParam(searchParams?.page);
-  const debugParam = resolveParam(searchParams?.debug);
-  const selectedParam = resolveParam(searchParams?.selected);
+  const roundParam = resolveParam(resolvedSearchParams.round);
+  const roundIdParam = resolveParam(resolvedSearchParams.roundId);
+  const modeParam = resolveParam(resolvedSearchParams.mode);
+  const rawStatusParam = resolvedSearchParams.status;
+  const statusParam = resolveParam(resolvedSearchParams.status);
+  const searchParam = resolveParam(resolvedSearchParams.search);
+  const perParam = resolveParam(resolvedSearchParams.per);
+  const pageParam = resolveParam(resolvedSearchParams.page);
+  const debugParam = resolveParam(resolvedSearchParams.debug);
+  const selectedParam = resolveParam(resolvedSearchParams.selected);
   const broadcastEntry = getBroadcastTournament(normalizedSlug);
   const isBroadcast = Boolean(broadcastEntry);
   const activeMode = normalizeMode(modeParam);
@@ -225,6 +300,7 @@ export default async function TournamentOverviewPage({
     );
   }
   const tournamentName = tournamentConfig?.name ?? broadcastEntry?.title ?? formatTournamentName(normalizedSlug);
+  const displayTournamentName = normalizeTournamentTitle(tournamentName);
   const isLccBroadcast = broadcastEntry?.sourceType === "livechesscloud";
   const isLichessBroadcast = broadcastEntry?.sourceType === "lichessBroadcast";
   const broadcastRoundIdOverride = typeof roundIdParam === "string" && roundIdParam.trim() ? roundIdParam.trim() : null;
@@ -258,12 +334,19 @@ export default async function TournamentOverviewPage({
   const fallbackRound = roundSelectionOptions.includes(defaultRound)
     ? defaultRound
     : roundSelectionOptions[0] ?? defaultRound;
+  const autoRound =
+    !isBroadcast && !requestedRound && !broadcastRoundIdOverride
+      ? selectAutoRoundFromManifest(normalizedSlug, baseRoundOptions)
+      : null;
   const activeRound =
     requestedRound && (roundSelectionOptions.length === 0 || roundSelectionOptions.includes(requestedRound))
       ? requestedRound
-      : fallbackRound;
-  const heroImage = tournamentConfig?.heroImage ?? null;
-  const placeholderFlag = tournamentConfig?.placeholderFlag ?? "\uD83C\uDFC6";
+      : autoRound && (roundSelectionOptions.length === 0 || roundSelectionOptions.includes(autoRound))
+        ? autoRound
+        : fallbackRound;
+  const tournamentImages = getTournamentImageBySlug(normalizedSlug, tournamentName);
+  const { candidates: thumbnailCandidates } = resolveTournamentThumbnail(tournamentImages);
+  const heroCandidate = thumbnailCandidates[0] ?? null;
   const startsAt = tournamentConfig?.startsAt ? new Date(tournamentConfig.startsAt) : null;
   const endsAt = tournamentConfig?.endsAt ? new Date(tournamentConfig.endsAt) : null;
   const dateRangeLabel = (() => {
@@ -342,19 +425,45 @@ export default async function TournamentOverviewPage({
     : isLichessBroadcast
       ? lichessPayload?.boards ?? []
       : [];
-  const roundEntries = isBroadcast
+  const roundEntries: TournamentRoundEntry[] = isBroadcast
     ? broadcastBoards.map(board => {
         const boardNo = board.boardNo;
         const boardId = buildBoardIdentifier(normalizedSlug, activeRound, boardNo);
         const whiteName = board.whiteName?.trim() || "?";
         const blackName = board.blackName?.trim() || "?";
         const normalizedResult = normalizeBroadcastResult(board.result);
-        const whiteRating = Number.isFinite(board.whiteElo ?? NaN) ? (board.whiteElo as number) : 0;
-        const blackRating = Number.isFinite(board.blackElo ?? NaN) ? (board.blackElo as number) : 0;
-        const whiteTitle = board.whiteTitle?.trim() || null;
-        const blackTitle = board.blackTitle?.trim() || null;
-        const whiteCountry = board.whiteCountry?.trim() || "";
-        const blackCountry = board.blackCountry?.trim() || "";
+        const whiteTimeMs =
+          "whiteTimeMs" in board && Number.isFinite(Number(board.whiteTimeMs ?? NaN))
+            ? Math.max(0, Math.floor(Number(board.whiteTimeMs)))
+            : null;
+        const blackTimeMs =
+          "blackTimeMs" in board && Number.isFinite(Number(board.blackTimeMs ?? NaN))
+            ? Math.max(0, Math.floor(Number(board.blackTimeMs)))
+            : null;
+        const sideToMove =
+          "sideToMove" in board && (board.sideToMove === "white" || board.sideToMove === "black")
+            ? board.sideToMove
+            : null;
+        const clockUpdatedAtMs =
+          "clockUpdatedAtMs" in board && Number.isFinite(Number(board.clockUpdatedAtMs ?? NaN))
+            ? Math.floor(Number(board.clockUpdatedAtMs))
+            : null;
+        let whiteRating = 0;
+        let blackRating = 0;
+        let whiteTitle: FideTitle | null = null;
+        let blackTitle: FideTitle | null = null;
+        let whiteCountry = "";
+        let blackCountry = "";
+        if ("whiteElo" in board) {
+          whiteRating =
+            typeof board.whiteElo === "number" && Number.isFinite(board.whiteElo) ? board.whiteElo : 0;
+          blackRating =
+            typeof board.blackElo === "number" && Number.isFinite(board.blackElo) ? board.blackElo : 0;
+          whiteTitle = normalizeFideTitle(board.whiteTitle);
+          blackTitle = normalizeFideTitle(board.blackTitle);
+          whiteCountry = board.whiteCountry?.trim() || "";
+          blackCountry = board.blackCountry?.trim() || "";
+        }
         return {
           board: boardNo,
           game: {
@@ -375,6 +484,10 @@ export default async function TournamentOverviewPage({
             result: normalizedResult,
             status: normalizeBroadcastStatus(board.status, normalizedResult),
             moveList: board.moveList ?? null,
+            whiteTimeMs,
+            blackTimeMs,
+            sideToMove,
+            clockUpdatedAtMs,
           },
         };
       })
@@ -385,7 +498,7 @@ export default async function TournamentOverviewPage({
     const blackRating =
       Number.isFinite(game.blackRating) && game.blackRating > 0 ? game.blackRating : undefined;
     const previewFen = buildPreviewFen(game, normalizedSlug, board);
-    const miniEvalCp = getMiniEvalCp(previewFen);
+    const miniEvalCp = previewFen ? getMiniEvalCp(previewFen) : null;
     const boardId = game.boardId ?? buildBoardIdentifier(normalizedSlug, activeRound, board);
 
     return {
@@ -437,6 +550,7 @@ export default async function TournamentOverviewPage({
   const roundNotStarted = !roundHasBoards || !roundHasStarted;
   const roundIsComplete =
     roundHasBoards && boardEntries.every(entry => resolveFilterStatus(entry) === "finished");
+  const activeRoundIsLive = !roundNotStarted && !roundIsComplete;
   const roundEmptyLabel = roundNotStarted
     ? "No boards available for this round yet."
     : "No boards match this filter yet.";
@@ -515,8 +629,8 @@ export default async function TournamentOverviewPage({
     });
 
     return Array.from(roster.values()).sort((a, b) => {
-      const ratingA = Number.isFinite(a.rating) ? a.rating : 0;
-      const ratingB = Number.isFinite(b.rating) ? b.rating : 0;
+      const ratingA = typeof a.rating === "number" && Number.isFinite(a.rating) ? a.rating : 0;
+      const ratingB = typeof b.rating === "number" && Number.isFinite(b.rating) ? b.rating : 0;
       if (ratingA !== ratingB) return ratingB - ratingA;
       return a.name.localeCompare(b.name);
     });
@@ -648,6 +762,8 @@ export default async function TournamentOverviewPage({
                     debugRoundId={debugRoundId}
                     activeRound={activeRound}
                     roundNotStarted={roundNotStarted}
+                    liveUpdatesEnabled={activeRoundIsLive}
+                    liveUpdatesIntervalMs={20000}
                     leaderboardPlayers={leaderboardRows}
                   />
                 </div>
@@ -656,13 +772,19 @@ export default async function TournamentOverviewPage({
                     <div className="p-4 sm:p-5">
                       <div className="flex flex-wrap items-center gap-2">
                         <h1 className="text-2xl font-semibold text-white sm:text-3xl">
-                          {tournamentName}
+                          {displayTournamentName}
                         </h1>
                         {isDebug ? (
                           <span className="rounded-full border border-rose-400/70 bg-rose-500/15 px-3 py-1 text-[11px] font-semibold text-rose-100">
                             Debug: Boards Tab Wired
                           </span>
                         ) : null}
+                        <Link
+                          href={`/broadcast/${encodeURIComponent(normalizedSlug)}/results?round=${activeRound}`}
+                          className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold text-slate-200 hover:border-white/30 hover:bg-white/10"
+                        >
+                          Results
+                        </Link>
                       </div>
                       {tournamentInfoStrip}
                   <div className="mt-2 flex justify-center">
@@ -670,21 +792,17 @@ export default async function TournamentOverviewPage({
                   </div>
                 </div>
                     <div className="relative min-h-[180px] bg-slate-950/60 p-3 sm:min-h-[220px] sm:p-4 lg:min-h-[240px] lg:p-5">
-                      {heroImage ? (
+                      {heroCandidate ? (
                         <Image
-                          src={heroImage}
-                          alt={`${tournamentName} banner`}
+                          src={heroCandidate.src}
+                          alt={`${displayTournamentName} banner`}
                           fill
                           sizes="(min-width: 1280px) 40vw, (min-width: 768px) 45vw, 100vw"
-                          className="object-contain"
+                          className={heroCandidate.fit === "cover" ? "object-cover" : "object-contain"}
                           priority
                         />
                       ) : (
-                        <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-black">
-                          <span className="text-5xl drop-shadow-[0_12px_24px_rgba(2,6,23,0.5)]">
-                            {placeholderFlag}
-                          </span>
-                        </div>
+                        <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-black" />
                       )}
                     </div>
                   </div>
@@ -731,6 +849,8 @@ export default async function TournamentOverviewPage({
                   layout="grid"
                   selectedBoardId={selectedBoardId}
                   variant="tournament"
+                  liveUpdatesEnabled={activeRoundIsLive}
+                  liveUpdatesIntervalMs={20000}
                   debug={isDebug}
                   debugRoundId={debugRoundId}
                   emptyLabel={roundEmptyLabel}

@@ -17,19 +17,20 @@ const requiredEnv = [
   'AWS_SECRET_ACCESS_KEY',
   'S3_BUCKET',
 ];
-for (const key of requiredEnv) {
-  if (!process.env[key]) {
-    throw new Error(`Missing required env var: ${key}`);
+const getS3Client = () => {
+  for (const key of requiredEnv) {
+    if (!process.env[key]) {
+      throw new Error(`Missing required env var: ${key}`);
+    }
   }
-}
-
-const s3 = new AWS.S3({
-  region: process.env.S3_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || process.env.S3_SECRET_ACCESS_KEY || "",
-  },
-});
+  return new AWS.S3({
+    region: process.env.S3_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || "",
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || process.env.S3_SECRET_ACCESS_KEY || "",
+    },
+  });
+};
 
 function buildPrefix(boardId: string, tournamentId?: string) {
   const base = (process.env.S3_PREFIX || "recordings").replace(/\/?$/, "/");
@@ -49,6 +50,7 @@ export async function GET(req: NextRequest) {
   if (process.env.ALLOW_DEV_MANIFEST_CHECK !== "true") {
     return unauthorizedResponse(403, "disabled");
   }
+  const s3 = getS3Client();
 
   const url = new URL(req.url);
   const boardId = (url.searchParams.get("boardId") || "").trim();

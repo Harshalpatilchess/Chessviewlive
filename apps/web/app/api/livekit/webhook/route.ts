@@ -27,9 +27,6 @@ declare global {
   var __cv_manifest_state__: Map<string, ManifestState> | undefined;
 }
 
-const key = process.env.LIVEKIT_WEBHOOK_API_KEY!;
-const secret = process.env.LIVEKIT_WEBHOOK_API_SECRET!;
-const receiver = new WebhookReceiver(key, secret);
 export const runtime = "nodejs";
 
 const recordingRooms = globalThis.__cv_recording__ ?? new Set<string>();
@@ -297,7 +294,12 @@ async function finalizeManifest(event: WebhookEvent): Promise<void> {
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    if (!key || !secret) return NextResponse.json({ ok: false, error: "missing_webhook_keys" }, { status: 500 });
+    const key = process.env.LIVEKIT_WEBHOOK_API_KEY || "";
+    const secret = process.env.LIVEKIT_WEBHOOK_API_SECRET || "";
+    if (!key || !secret) {
+      return NextResponse.json({ ok: false, error: "missing_webhook_keys" }, { status: 500 });
+    }
+    const receiver = new WebhookReceiver(key, secret);
     const auth = req.headers.get("authorization") || "";
     const body = await req.text();
     const event: WebhookEvent = await receiver.receive(body, auth);

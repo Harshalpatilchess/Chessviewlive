@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Component,
   Fragment,
   useCallback,
   useMemo,
@@ -49,10 +50,12 @@ type RightPaneTabsProps = {
   plies: Ply[];
   currentMoveIndex: number;
   onMoveSelect: (i: number) => void;
+  notationCenterRequestToken?: number;
   engineEval?: StockfishEval;
   engineLines?: StockfishLine[];
   engineName?: string;
   engineBackend?: EngineBackend;
+  engineError?: string | null;
   setEngineBackend?: (backend: EngineBackend) => void;
   multiPv?: number;
   depthIndex?: number;
@@ -84,6 +87,34 @@ type RightPaneTabsProps = {
 type FullTabKey = "notation" | "live" | "boards";
 type MiniTabKey = "notation" | "engine" | "boards";
 type TabKey = FullTabKey | MiniTabKey;
+
+type EngineErrorBoundaryProps = {
+  fallback: ReactNode;
+  children: ReactNode;
+};
+
+type EngineErrorBoundaryState = {
+  hasError: boolean;
+};
+
+class EngineErrorBoundary extends Component<EngineErrorBoundaryProps, EngineErrorBoundaryState> {
+  state: EngineErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("[engine-panel] render error", error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback;
+    }
+    return this.props.children;
+  }
+}
 
 const TabButton = ({
   label,
@@ -252,6 +283,7 @@ const RightPaneTabs = ({
   engineLines,
   engineName,
   engineBackend = "js-worker",
+  engineError,
   setEngineBackend,
   multiPv,
   depthIndex,
@@ -275,6 +307,7 @@ const RightPaneTabs = ({
   plies,
   currentMoveIndex,
   onMoveSelect,
+  notationCenterRequestToken,
   boardNavigation,
   currentBoardId,
   onBoardSelect,
@@ -284,6 +317,7 @@ const RightPaneTabs = ({
 }: RightPaneTabsProps) => {
   const isMini = variant === "mini";
   const isCompact = density === "compact";
+  const isDesktopFixedPanel = !isMini && (mode === "live" || mode === "replay");
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
@@ -312,6 +346,9 @@ const RightPaneTabs = ({
   const boardsPaneRef = useRef<HTMLDivElement | null>(null);
   const [boardsCompactMode, setBoardsCompactMode] = useState(false);
   const [boardsLockScroll, setBoardsLockScroll] = useState(false);
+  const [notationCanScroll, setNotationCanScroll] = useState(false);
+  const [notationAtTop, setNotationAtTop] = useState(true);
+  const [notationAtBottom, setNotationAtBottom] = useState(false);
   useEffect(() => {
     setActiveTab(resolvedPane);
   }, [resolvedPane]);
@@ -634,6 +671,54 @@ const RightPaneTabs = ({
     };
   }, [activeTab, boardsData.length, boardsCompactMode]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (activeTab !== "notation") return;
+    const container = notationScrollRef.current;
+    if (!container) return;
+
+    const epsilon = 2;
+    let raf = 0;
+
+    const update = () => {
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const canScroll = scrollHeight > clientHeight + epsilon;
+      const atTop = scrollTop <= epsilon;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - epsilon;
+      setNotationCanScroll(canScroll);
+      setNotationAtTop(atTop);
+      setNotationAtBottom(!canScroll || atBottom);
+    };
+
+    const scheduleUpdate = () => {
+      if (raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        update();
+      });
+    };
+
+    scheduleUpdate();
+    container.addEventListener("scroll", scheduleUpdate, { passive: true });
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => scheduleUpdate());
+      ro.observe(container);
+    } else {
+      window.addEventListener("resize", scheduleUpdate);
+    }
+
+    return () => {
+      container.removeEventListener("scroll", scheduleUpdate);
+      ro?.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+      if (raf) {
+        window.cancelAnimationFrame(raf);
+      }
+    };
+  }, [activeTab, analysisInsertions.length, clampedCurrentIndex, resolvedPlies.length]);
+
   const tabConfig: Array<{ key: TabKey; label: string }> = isMini
     ? [
         { key: "notation", label: "Notation" },
@@ -645,43 +730,94 @@ const RightPaneTabs = ({
         { key: "live", label: "Live commentary" },
         { key: "boards", label: "Boards navigation" },
       ];
+  const effectiveEngineError = engineOn ? engineError : null;
   const showEnginePanel = isMini ? activeTab === "engine" : activeTab !== "boards";
-  const enginePanel = (
-    <div className={isCompact ? "px-2 pb-2" : "px-3 pb-2"}>
-      <StockfishPanel
-        enabled={engineOn}
-        evalResult={engineEval ?? null}
-        lines={engineLines ?? []}
-        multiPv={displayMultiPv}
-        depthIndex={displayDepthIndex}
-        depthSteps={resolvedDepthSteps}
-        targetDepth={displayTargetDepth}
-        onMultiPvChange={setMultiPv}
-        onDepthChange={setDepthIndex}
-        profileId={profileId}
-        profileConfig={engineProfile}
-        onProfileChange={handleProfileChange}
-        fen={fen}
-        engineName={engineName}
-        engineBackend={engineBackend}
-        onEngineBackendChange={debugEngineSwitcherEnabled ? setEngineBackend : undefined}
-        debugBackendSwitcherEnabled={debugEngineSwitcherEnabled}
-        onToggle={value => setEngineOn(value)}
-        activeTab={activeTab}
-        variant={isHomepageMini ? "mini" : "full"}
-        onNavigateToFull={isHomepageMini ? handleMiniNavigate : undefined}
-      />
+  const engineErrorNotice = effectiveEngineError ? (
+    <div
+      className={`border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 ${
+        isCompact ? "rounded-xl" : "rounded-2xl"
+      }`}
+      role="status"
+      aria-live="polite"
+    >
+      Engine temporarily unavailable. Toggle engine to retry.
+    </div>
+  ) : null;
+  const engineUnavailableNotice = (
+    <div
+      className={`border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 ${
+        isCompact ? "rounded-xl" : "rounded-2xl"
+      }`}
+      role="status"
+      aria-live="polite"
+    >
+      Engine temporarily unavailable. Toggle engine to retry.
     </div>
   );
+  const enginePanel = (
+    <div className={isCompact ? "px-2 pb-2" : "px-3 pb-2"}>
+      <EngineErrorBoundary fallback={engineUnavailableNotice}>
+        <StockfishPanel
+          enabled={engineOn}
+          evalResult={engineEval ?? null}
+          lines={engineLines ?? []}
+          multiPv={displayMultiPv}
+          depthIndex={displayDepthIndex}
+          depthSteps={resolvedDepthSteps}
+          targetDepth={displayTargetDepth}
+          onMultiPvChange={setMultiPv}
+          onDepthChange={setDepthIndex}
+          profileId={profileId}
+          profileConfig={engineProfile}
+          onProfileChange={handleProfileChange}
+          fen={fen}
+          engineName={engineName}
+          engineBackend={engineBackend}
+          onEngineBackendChange={debugEngineSwitcherEnabled ? setEngineBackend : undefined}
+          debugBackendSwitcherEnabled={debugEngineSwitcherEnabled}
+          onToggle={value => setEngineOn(value)}
+          activeTab={activeTab}
+          variant={isHomepageMini ? "mini" : "full"}
+          onNavigateToFull={isHomepageMini ? handleMiniNavigate : undefined}
+        />
+      </EngineErrorBoundary>
+    </div>
+  );
+  const enginePanelContent = engineErrorNotice ? (
+    <div className={isCompact ? "px-2 pb-2" : "px-3 pb-2"}>{engineErrorNotice}</div>
+  ) : (
+    enginePanel
+  );
+  const notationPanelHeightClass = isCompact
+    ? "h-[clamp(13.25rem,36dvh,20rem)] sm:h-[clamp(13.5rem,38dvh,22rem)] lg:h-[clamp(14rem,40dvh,24rem)]"
+    : "h-[clamp(14rem,40dvh,22rem)] sm:h-[clamp(14.5rem,42dvh,24rem)] lg:h-[clamp(15rem,44dvh,28rem)]";
+  const notationPanelDesktopHeightClass = isCompact
+    ? "h-[clamp(14rem,28dvh,16rem)] lg:h-[clamp(14.5rem,30dvh,16.5rem)]"
+    : "h-[clamp(15rem,30dvh,17rem)] lg:h-[clamp(15.5rem,32dvh,17.5rem)]";
+  const panelSectionSizingClass = isDesktopFixedPanel
+    ? "w-full min-h-0 flex-1"
+    : "h-full flex-1";
+  const panelDesktopSeamClass = isDesktopFixedPanel ? "lg:rounded-t-none lg:border-t-0" : "";
+  const panelHeaderSeamClass = isDesktopFixedPanel ? "lg:rounded-t-none" : "";
+  const panelBodyInsetClass = !isCompact && !isDesktopFixedPanel ? "sm:pr-2" : "";
+  const notationPanelSizingClass = isDesktopFixedPanel
+    ? notationPanelDesktopHeightClass
+    : notationPanelHeightClass;
+  const notationOuterClass = isCompact
+    ? `flex min-h-0 flex-col px-2 ${isDesktopFixedPanel ? "flex-1" : ""}`
+    : `flex min-h-0 flex-col px-3 ${isDesktopFixedPanel ? "flex-1" : ""}`;
+  const notationInnerClass = isCompact
+    ? `flex min-h-0 flex-col gap-2 pb-2 ${isDesktopFixedPanel ? "flex-1" : ""}`
+    : `flex min-h-0 flex-col gap-3 pb-3 ${isDesktopFixedPanel ? "flex-1" : ""}`;
 
   return (
     <section
-      className={`flex h-full min-h-0 flex-1 flex-col overflow-hidden border border-white/10 bg-slate-900/70 shadow-sm ${
+      className={`flex min-h-0 flex-col overflow-hidden border border-white/10 bg-slate-900/70 shadow-sm ${panelSectionSizingClass} ${panelDesktopSeamClass} ${
         isCompact ? "rounded-xl" : "rounded-2xl"
       }`}
     >
       <div
-        className={`flex flex-none gap-2 overflow-x-auto bg-slate-900/60 backdrop-blur lg:overflow-visible ${
+        className={`flex flex-none gap-2 overflow-x-auto bg-slate-900/60 backdrop-blur lg:overflow-visible ${panelHeaderSeamClass} ${
           isCompact ? "rounded-t-xl px-2 py-1" : "rounded-t-2xl px-2 py-1.5 lg:px-3 lg:py-0.5"
         }`}
       >
@@ -697,18 +833,18 @@ const RightPaneTabs = ({
       </div>
 
       <div
-        className={`relative mt-1 flex-1 min-h-0 pr-0 ${isCompact ? "" : "sm:pr-2"} ${
-          isMini ? "flex flex-col" : ""
-        }`}
+        className={`relative mt-0 flex flex-1 min-h-0 flex-col overflow-hidden pr-0 ${panelBodyInsetClass}`}
       >
         {showEnginePanel ? (
-          <div className={isMini ? "flex min-h-0 flex-1 flex-col" : ""}>{enginePanel}</div>
+          <div className={isMini ? "flex min-h-0 flex-1 flex-col" : ""}>{enginePanelContent}</div>
         ) : null}
 
         {activeTab === "notation" ? (
-          <div className={isCompact ? "flex h-full min-h-0 flex-col px-2" : "flex h-full min-h-0 flex-col px-3"}>
-            <div className={isCompact ? "flex min-h-0 flex-1 flex-col gap-2 pb-2" : "flex min-h-0 flex-1 flex-col gap-3 pb-3"}>
-              <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-white/10 bg-slate-950/40 shadow-inner">
+          <div className={notationOuterClass}>
+            <div className={notationInnerClass}>
+              <div
+                className={`relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-white/10 bg-slate-950/40 shadow-inner ${notationPanelSizingClass}`}
+              >
                 <div
                   className={`grid grid-cols-[48px_minmax(0,1fr)_minmax(0,1fr)] gap-1.5 border-b border-white/5 bg-slate-900 font-medium uppercase tracking-wide text-slate-200 ${
                     isCompact ? "px-2.5 py-1 text-[10px]" : "px-3 py-1.5 text-[11px]"
@@ -718,19 +854,45 @@ const RightPaneTabs = ({
                   <span>White</span>
                   <span>Black</span>
                 </div>
-                <div ref={notationScrollRef} className="themed-scroll flex-1 overflow-y-auto">
-                  <div className={isCompact ? "flex flex-col px-2.5 pb-3" : "flex flex-col px-3 pb-4"}>
-                    <NotationList
-                      plies={resolvedPlies}
-                      currentMoveIndex={clampedCurrentIndex}
-                      onMoveClick={handleMoveClick}
-                      scrollContainerRef={notationScrollRef}
-                      hideHeader
-                      renderContainer={false}
-                      headerSelector={null}
-                      insertions={analysisInsertions}
-                    />
+                <div className="notation-scroll-shell relative flex min-h-0 flex-1 flex-col">
+                  <div
+                    ref={notationScrollRef}
+                    className="themed-scroll notation-scroll notation-scroll-visible min-h-0 flex-1 overflow-y-scroll"
+                  >
+                    <div className={isCompact ? "flex flex-col px-2.5 pb-8" : "flex flex-col px-3 pb-9"}>
+                      <NotationList
+                        plies={resolvedPlies}
+                        currentMoveIndex={clampedCurrentIndex}
+                        onMoveClick={handleMoveClick}
+                        scrollContainerRef={notationScrollRef}
+                        notationCenterRequestToken={notationCenterRequestToken}
+                        hideHeader
+                        renderContainer={false}
+                        headerSelector={null}
+                        insertions={analysisInsertions}
+                      />
+                    </div>
                   </div>
+                  {notationCanScroll && !notationAtTop ? (
+                    <div
+                      className="pointer-events-none absolute inset-x-0 top-0 h-6 bg-gradient-to-b from-slate-950/95 to-transparent"
+                      aria-hidden
+                    />
+                  ) : null}
+                  {notationCanScroll && !notationAtBottom ? (
+                    <div
+                      className="pointer-events-none absolute inset-x-0 bottom-0 h-7 bg-gradient-to-t from-slate-950/95 to-transparent"
+                      aria-hidden
+                    />
+                  ) : null}
+                  {notationCanScroll && notationAtTop && !notationAtBottom ? (
+                    <div
+                      className="pointer-events-none absolute right-2 top-2 rounded-full border border-white/10 bg-slate-900/70 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-slate-300"
+                      aria-hidden
+                    >
+                      Scroll
+                    </div>
+                  ) : null}
                 </div>
               </div>
 

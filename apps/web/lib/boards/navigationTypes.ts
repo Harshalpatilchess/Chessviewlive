@@ -23,6 +23,16 @@ export type BoardNavigationEntry = {
   finalFen?: string | null;
   previewFen?: string | null;
   moveList?: string[] | null;
+  replayResolveReason?:
+    | "resolved_final"
+    | "explicit_zero_moves"
+    | "missing_data_pending"
+    | "parse_failed"
+    | "cached_start_blocking_upgrade"
+    | null;
+  replayExplicitZeroMoves?: boolean | null;
+  miniBoardPending?: boolean | null;
+  miniBoardExplicitStart?: boolean | null;
   white: BoardNavigationPlayer;
   black: BoardNavigationPlayer;
 };

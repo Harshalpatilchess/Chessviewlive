@@ -29,19 +29,20 @@ const requiredEnv = [
   'AWS_SECRET_ACCESS_KEY',
   'S3_BUCKET',
 ];
-for (const key of requiredEnv) {
-  if (!process.env[key]) {
-    throw new Error(`Missing required env var: ${key}`);
+const getS3Client = () => {
+  for (const key of requiredEnv) {
+    if (!process.env[key]) {
+      throw new Error(`Missing required env var: ${key}`);
+    }
   }
-}
-
-const s3 = new S3({
-  region: process.env.S3_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-  },
-});
+  return new S3({
+    region: process.env.S3_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+    },
+  });
+};
 
 function fallbackDuration(seconds: number): string | undefined {
   if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
@@ -63,6 +64,7 @@ function fallbackStartedAt(startedAt?: string | null): string | undefined {
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   try {
+    const s3 = getS3Client();
     const url = new URL(req.url);
     const boardId = url.searchParams.get("boardId") || "";
     if (!boardId) return NextResponse.json({ ok: false, error: "missing_boardId" }, { status: 400 });

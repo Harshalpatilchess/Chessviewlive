@@ -7,13 +7,20 @@ import Flag from "@/components/live/Flag";
 import TitleBadge from "@/components/boards/TitleBadge";
 import EvalBar from "@/components/live/EvalBar";
 import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
-import { formatChessClockMs, isTimeTrouble } from "@/lib/live/clockFormat";
+import { formatMiniBoardClockMs, MINI_BOARD_CLOCK_PLACEHOLDER } from "@/lib/boards/miniBoardClock";
 import { formatEvalLabel, mapEvaluationToBar, type EngineEvaluation } from "@/lib/engine/evalMapping";
 import { consumeForceEval, peekForceEval } from "@/lib/engine/miniEvalDebug";
+import {
+  canRunMiniBoardEvalRequests,
+  isMiniBoardEvalFeatureEnabled,
+  isMiniBoardEvalSessionBlocked,
+  recordMiniBoardEvalFailure,
+} from "@/lib/engine/miniBoardEvalGate";
 import useTweenedNumber from "@/lib/hooks/useTweenedNumber";
+import { isTimeTrouble } from "@/lib/live/clockFormat";
 import type { GameResult } from "@/lib/tournamentManifest";
 import type { BoardNavigationEntry, BoardNavigationPlayer } from "@/lib/boards/navigationTypes";
-import { buildBroadcastBoardPath } from "@/lib/paths";
+import { buildViewerBoardPath } from "@/lib/paths";
 
 type BoardsNavigationCardProps = {
   board: BoardNavigationEntry;
@@ -44,6 +51,7 @@ type BoardsNavigationCardProps = {
   sharedFenCache?: boolean;
   warmLiteEval?: boolean;
   autoEvalEnabled?: boolean;
+  buildBoardHref?: (board: BoardNavigationEntry) => string;
   onBoardClick?: (board: BoardNavigationEntry) => boolean | void;
   onDebugVisibilityChange?: (boardId: string, isVisible: boolean) => void;
 };
@@ -125,6 +133,8 @@ const MINI_EVAL_STORAGE_PREFIX = "cv-mini-eval-lite:";
 const MINI_EVAL_STORAGE_TTL_MS = 20 * 60 * 1000;
 const MINI_EVAL_STORAGE_MAX = 200;
 const MINI_EVAL_COOLDOWN_MS = 2500;
+const MINI_BOARD_MISSING_FEN_LOGGED = new Set<string>();
+const REPLAY_MINI_REASON_LOGGED = new Set<string>();
 
 const getFenHash = (fen: string, full = false) => {
   const trimmed = fen.trim();
@@ -354,17 +364,19 @@ const PlayerStrip = ({
   player,
   scorePill,
   clockLabel,
+  hasClock,
   isTimeTrouble,
 }: {
   player: BoardNavigationPlayer;
   scorePill?: string | null;
   clockLabel?: string | null;
+  hasClock?: boolean;
   isTimeTrouble?: boolean;
 }) => {
   const ratingValue = Number.isFinite(player?.rating ?? NaN) ? String(player.rating) : "\u2014";
   const ratingTone = ratingValue === "\u2014" ? "text-slate-500/80" : "text-slate-400";
-  const resolvedClockLabel = clockLabel ?? "\u2014:\u2014";
-  const clockTone = clockLabel
+  const resolvedClockLabel = clockLabel ?? MINI_BOARD_CLOCK_PLACEHOLDER;
+  const clockTone = hasClock
     ? isTimeTrouble
       ? "border-rose-400/70 text-rose-50 shadow-[0_0_0_1px_rgba(248,113,113,0.25)]"
       : "border-slate-600/60 text-slate-100"
@@ -411,7 +423,7 @@ export const BoardsNavigationCard = ({
   isActive,
   paneQuery,
   compact = false,
-  tournamentSlug,
+  tournamentSlug: _tournamentSlug,
   mode,
   variant = "default",
   viewerEvalBars = false,
@@ -426,6 +438,7 @@ export const BoardsNavigationCard = ({
   sharedFenCache = false,
   warmLiteEval = false,
   autoEvalEnabled = false,
+  buildBoardHref,
   onBoardClick,
   onDebugVisibilityChange,
 }: BoardsNavigationCardProps) => {
@@ -438,7 +451,8 @@ export const BoardsNavigationCard = ({
     Number.isFinite(Number(board.whiteTimeMs ?? NaN)) || Number.isFinite(Number(board.blackTimeMs ?? NaN));
   const isFinished = Boolean(normalizedResult) || board.status === "final";
   const isScheduled = board.status === "scheduled";
-  const isLive = !isFinished && !isScheduled && isExplicitLive;
+  const isReplayCard = mode === "replay";
+  const isLive = !isReplayCard && !isFinished && !isScheduled && isExplicitLive;
   const clockBaseWhiteMs = Number.isFinite(board.whiteTimeMs ?? NaN)
     ? Number(board.whiteTimeMs)
     : null;
@@ -464,20 +478,51 @@ export const BoardsNavigationCard = ({
   );
   const resolvedWhiteClockMs = resolveClockMs(clockBaseWhiteMs, "white");
   const resolvedBlackClockMs = resolveClockMs(clockBaseBlackMs, "black");
-  const whiteClockLabel = Number.isFinite(resolvedWhiteClockMs ?? NaN)
-    ? formatChessClockMs(resolvedWhiteClockMs as number)
-    : null;
-  const blackClockLabel = Number.isFinite(resolvedBlackClockMs ?? NaN)
-    ? formatChessClockMs(resolvedBlackClockMs as number)
-    : null;
+  const whiteHasClockData = Number.isFinite(resolvedWhiteClockMs ?? NaN);
+  const blackHasClockData = Number.isFinite(resolvedBlackClockMs ?? NaN);
+  const whiteClockLabel = formatMiniBoardClockMs(resolvedWhiteClockMs);
+  const blackClockLabel = formatMiniBoardClockMs(resolvedBlackClockMs);
   const isWhiteInTimeTrouble = isTimeTrouble(resolvedWhiteClockMs, { enabled: isLive });
   const isBlackInTimeTrouble = isTimeTrouble(resolvedBlackClockMs, { enabled: isLive });
   const resolvedFen = navFen ? navFen.fen : board.previewFen ?? (isFinished ? board.finalFen : null);
-  const showClocks = !isFinished && (isExplicitLive || hasClockData);
   const normalizedPreviewFen = useMemo(
     () => (typeof resolvedFen === "string" ? resolvedFen.trim() : ""),
     [resolvedFen]
   );
+  const explicitMoveCount = Array.isArray(board.moveList) ? board.moveList.length : null;
+  const replayResolveReason = board.replayResolveReason ?? null;
+  const hasExplicitZeroMoves = board.replayExplicitZeroMoves === true || explicitMoveCount === 0;
+  const hasExplicitMiniStart = board.miniBoardExplicitStart === true || hasExplicitZeroMoves;
+  const hasMiniClockData =
+    Number.isFinite(Number(board.whiteTimeMs ?? NaN)) || Number.isFinite(Number(board.blackTimeMs ?? NaN));
+  const hasMiniStartSignal =
+    board.miniBoardPending === true ||
+    board.status === "live" ||
+    board.status === "final" ||
+    isLiveResult ||
+    (explicitMoveCount ?? 0) > 0 ||
+    hasMiniClockData ||
+    Boolean(board.sideToMove) ||
+    Number.isFinite(Number(board.evaluation ?? NaN));
+  const isTournamentMiniTile = variant === "tournament";
+  const isReplayTournamentTile = isTournamentMiniTile && mode === "replay";
+  const shouldShowPendingBoard =
+    isTournamentMiniTile &&
+    (board.miniBoardPending === true || (!normalizedPreviewFen && !hasExplicitMiniStart && hasMiniStartSignal));
+  const miniBoardPosition = shouldShowPendingBoard ? "" : normalizedPreviewFen || "start";
+  const replayStartOrPendingReason = useMemo(() => {
+    if (!isReplayTournamentTile) return null;
+    if (shouldShowPendingBoard) {
+      if (replayResolveReason === "parse_failed") return "parse_failed";
+      if (replayResolveReason === "cached_start_blocking_upgrade") return "cached_start_blocking_upgrade";
+      return "missing_data_pending";
+    }
+    if (miniBoardPosition !== "start") return null;
+    if (hasExplicitMiniStart) return "explicit_zero_moves";
+    if (replayResolveReason === "parse_failed") return "parse_failed";
+    if (replayResolveReason === "cached_start_blocking_upgrade") return "cached_start_blocking_upgrade";
+    return "missing_data_pending";
+  }, [hasExplicitMiniStart, isReplayTournamentTile, miniBoardPosition, replayResolveReason, shouldShowPendingBoard]);
   const fenHash = useMemo(
     () => (normalizedPreviewFen ? getFenHash(normalizedPreviewFen, debug) : ""),
     [debug, normalizedPreviewFen]
@@ -487,6 +532,7 @@ export const BoardsNavigationCard = ({
     [board.boardId, fenHash]
   );
   const viewerEvalBarsEnabled = viewerEvalBars && variant === "default";
+  const miniBoardEvalFeatureEnabled = isMiniBoardEvalFeatureEnabled();
   const externalEvalEnabled = viewerEvalBarsEnabled && navEval !== undefined;
   const lastStableNavEvalRef = useRef<BoardsNavigationCardProps["navEval"] | null>(null);
   const [debugFlags, setDebugFlags] = useState(() => ({
@@ -508,11 +554,15 @@ export const BoardsNavigationCard = ({
   const [lastLiteError, setLastLiteError] = useState<string | null>(null);
   const [lastPersistStatus, setLastPersistStatus] = useState<MiniEvalStorageReadResult["status"] | null>(null);
   const [lastEvalSource, setLastEvalSource] = useState<"lite" | "persist" | null>(null);
-  const [statusReason, setStatusReason] = useState<string | null>(() => (autoEvalEnabled ? "auto-enabled" : null));
+  const [statusReason, setStatusReason] = useState<string | null>(() =>
+    miniBoardEvalFeatureEnabled && autoEvalEnabled ? "auto-enabled" : null
+  );
   const [retryCount, setRetryCount] = useState(0);
   const [clickCounter, setClickCounter] = useState(0);
   const [liteBadge, setLiteBadge] = useState<"lite" | "cached" | null>(null);
-  const [evalEnabled, setEvalEnabled] = useState(() => viewerEvalBarsEnabled || autoEvalEnabled);
+  const [evalEnabled, setEvalEnabled] = useState(() =>
+    miniBoardEvalFeatureEnabled && (viewerEvalBarsEnabled || autoEvalEnabled)
+  );
   const [enabledByUser, setEnabledByUser] = useState(false);
   const [isEvalArming, setIsEvalArming] = useState(false);
   const badgeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -525,10 +575,11 @@ export const BoardsNavigationCard = ({
   const encodedPaneQuery = resolvedPaneQuery ? encodeURIComponent(resolvedPaneQuery) : "";
   const statusMode = isFinished ? "replay" : "live";
   const resolvedMode = variant === "tournament" ? statusMode : mode ?? statusMode;
-  const baseHref = buildBroadcastBoardPath(board.boardId, resolvedMode, tournamentSlug);
+  const baseHref = buildViewerBoardPath(board.boardId, resolvedMode);
   const querySuffix =
     typeof linkQuery === "string" ? linkQuery : resolvedPaneQuery ? `?pane=${encodedPaneQuery}` : "";
-  const href = `${baseHref}${querySuffix}`;
+  const fallbackHref = `${baseHref}${querySuffix}`;
+  const href = buildBoardHref ? buildBoardHref(board) : fallbackHref;
 
 
   useEffect(() => {
@@ -658,17 +709,19 @@ export const BoardsNavigationCard = ({
   }, [board.boardId, evalCacheKey, fenHash, navDebugEnabled, normalizedPreviewFen, viewerEvalBarsEnabled]);
 
   useEffect(() => {
+    if (!miniBoardEvalFeatureEnabled) return;
     if (autoEvalEnabled && !evalEnabled) {
       setEvalEnabled(true);
       setStatusReason("auto-enabled");
     }
-  }, [autoEvalEnabled, evalEnabled]);
+  }, [autoEvalEnabled, evalEnabled, miniBoardEvalFeatureEnabled]);
 
   useEffect(() => {
+    if (!miniBoardEvalFeatureEnabled) return;
     if (!viewerEvalBarsEnabled || evalEnabled) return;
     setEvalEnabled(true);
     setStatusReason("always-enabled");
-  }, [evalEnabled, viewerEvalBarsEnabled]);
+  }, [evalEnabled, miniBoardEvalFeatureEnabled, viewerEvalBarsEnabled]);
 
   const startEvalArming = useCallback((durationMs: number) => {
     if (armingTimeoutRef.current) {
@@ -686,6 +739,16 @@ export const BoardsNavigationCard = ({
       if (externalEvalEnabled) return;
       const isClick = source === "click";
       const isPrefetch = source === "prefetch";
+      if (!canRunMiniBoardEvalRequests()) {
+        if (isClick) {
+          setLiteStatus("idle");
+          setLastLiteError(null);
+          setStatusReason(
+            miniBoardEvalFeatureEnabled && isMiniBoardEvalSessionBlocked() ? "session-blocked" : "feature-disabled"
+          );
+        }
+        return;
+      }
       const isEnableClick = isClick && enableClickRef.current;
       if (isClick && enableClickRef.current) {
         enableClickRef.current = false;
@@ -959,58 +1022,70 @@ export const BoardsNavigationCard = ({
       }
 
       const runRequest = async (): Promise<LiteEvalOutcome> => {
-        const response = await fetch(requestUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          cache: "no-store",
-        });
-        const status = response.status;
-        let json: LiteEvalApiResponse | null = null;
         try {
-          json = (await response.json()) as LiteEvalApiResponse;
-        } catch {
-          json = null;
-        }
-        const meta = json?.debug ?? null;
-        if (debugVerbose && isClick) {
-          console.info("mini eval after response", {
-            boardId: board.boardId,
-            fenHash,
-            clickCounter: nextClickCount,
-            status,
-            meta,
+          const response = await fetch(requestUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            cache: "no-store",
           });
-        }
-        if (!response.ok) {
+          const status = response.status;
+          let json: LiteEvalApiResponse | null = null;
+          try {
+            json = (await response.json()) as LiteEvalApiResponse;
+          } catch {
+            json = null;
+          }
+          const meta = json?.debug ?? null;
+          if (debugVerbose && isClick) {
+            console.info("mini eval after response", {
+              boardId: board.boardId,
+              fenHash,
+              clickCounter: nextClickCount,
+              status,
+              meta,
+            });
+          }
+          if (!response.ok) {
+            recordMiniBoardEvalFailure({ source: "card", status });
+            return {
+              eval: null,
+              meta,
+              ok: false,
+              status,
+              errorMessage: json?.error ?? "lite eval failed",
+            };
+          }
+          const line = Array.isArray(json?.lines) ? json.lines[0] : undefined;
+          const evalResult = buildMiniEngineEval(normalizedPreviewFen, line?.scoreCp, line?.scoreMate, {
+            mapToBar: viewerEvalBarsEnabled,
+          });
+          if (!evalResult) {
+            return {
+              eval: null,
+              meta,
+              ok: false,
+              status,
+              errorMessage: json?.error ?? "lite eval failed",
+            };
+          }
+          return {
+            eval: evalResult,
+            meta,
+            ok: true,
+            status,
+            errorMessage: null,
+          };
+        } catch (error) {
+          recordMiniBoardEvalFailure({ source: "card", status: null, error });
           return {
             eval: null,
-            meta,
+            meta: null,
             ok: false,
-            status,
-            errorMessage: json?.error ?? "lite eval failed",
+            status: 0,
+            errorMessage: "lite eval failed",
           };
         }
-        const line = Array.isArray(json?.lines) ? json.lines[0] : undefined;
-        const evalResult = buildMiniEngineEval(normalizedPreviewFen, line?.scoreCp, line?.scoreMate, {
-          mapToBar: viewerEvalBarsEnabled,
-        });
-        if (!evalResult) {
-          return {
-            eval: null,
-            meta,
-            ok: false,
-            status,
-            errorMessage: json?.error ?? "lite eval failed",
-          };
-        }
-        return {
-          eval: evalResult,
-          meta,
-          ok: true,
-          status,
-          errorMessage: null,
-        };
       };
 
       lastRequestedFenHashRef.current = fenHash;
@@ -1071,6 +1146,7 @@ export const BoardsNavigationCard = ({
       externalEvalEnabled,
       fenHash,
       liteStatus,
+      miniBoardEvalFeatureEnabled,
       navDebugEnabled,
       normalizedPreviewFen,
       shouldLog,
@@ -1082,6 +1158,7 @@ export const BoardsNavigationCard = ({
   const handleEnableEval = useCallback(() => {
     if (externalEvalEnabled) return;
     if (viewerEvalBarsEnabled) return;
+    if (!miniBoardEvalFeatureEnabled) return;
     if (evalEnabled) return;
     setEvalEnabled(true);
     setEnabledByUser(true);
@@ -1089,15 +1166,17 @@ export const BoardsNavigationCard = ({
     enableClickRef.current = true;
     startEvalArming(1500);
     void runLiteEval("click");
-  }, [evalEnabled, externalEvalEnabled, runLiteEval, startEvalArming, viewerEvalBarsEnabled]);
+  }, [evalEnabled, externalEvalEnabled, miniBoardEvalFeatureEnabled, runLiteEval, startEvalArming, viewerEvalBarsEnabled]);
 
   const requestLiteEval = useCallback(async () => {
     if (externalEvalEnabled) return;
+    if (!canRunMiniBoardEvalRequests()) return;
     await runLiteEval("click");
   }, [externalEvalEnabled, runLiteEval]);
 
   useEffect(() => {
     if (externalEvalEnabled) return;
+    if (!canRunMiniBoardEvalRequests()) return;
     if (!evalEnabled) return;
     if (!viewerEvalBarsEnabled && !warmLiteEval && !enabledByUser && !autoEvalEnabled) return;
     if (!fenHash || !normalizedPreviewFen) return;
@@ -1237,6 +1316,42 @@ export const BoardsNavigationCard = ({
       : null;
 
   useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (variant !== "tournament") return;
+    if (isReplayTournamentTile) return;
+    if (shouldShowPendingBoard) return;
+    if (normalizedPreviewFen) return;
+    if (MINI_BOARD_MISSING_FEN_LOGGED.has(board.boardId)) return;
+    MINI_BOARD_MISSING_FEN_LOGGED.add(board.boardId);
+    console.info("[boards-navigation] missing mini board position; using start", {
+      boardId: board.boardId,
+    });
+  }, [board.boardId, isReplayTournamentTile, normalizedPreviewFen, shouldShowPendingBoard, variant]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (!replayStartOrPendingReason) return;
+    const marker = `${board.boardId}:${replayStartOrPendingReason}`;
+    if (REPLAY_MINI_REASON_LOGGED.has(marker)) return;
+    REPLAY_MINI_REASON_LOGGED.add(marker);
+    console.info("[boards-navigation] replay mini board reason", {
+      boardId: board.boardId,
+      reason: replayStartOrPendingReason,
+      display: miniBoardPosition === "start" ? "start" : "pending",
+      moveCount: explicitMoveCount ?? 0,
+      hasPreviewFen: Boolean(normalizedPreviewFen),
+      hasFinalFen: typeof board.finalFen === "string" && board.finalFen.trim().length > 0,
+    });
+  }, [
+    board.boardId,
+    board.finalFen,
+    explicitMoveCount,
+    miniBoardPosition,
+    normalizedPreviewFen,
+    replayStartOrPendingReason,
+  ]);
+
+  useEffect(() => {
     if (!viewerEvalBarsEnabled || !navDebugEnabled) return;
     console.log("NAV_BAR_VALUE", {
       boardId: board.boardId,
@@ -1336,16 +1451,24 @@ export const BoardsNavigationCard = ({
           player={board.black}
           scorePill={scorePillBlack}
           clockLabel={blackClockLabel}
+          hasClock={blackHasClockData}
           isTimeTrouble={isBlackInTimeTrouble}
         />
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-0">
           <div className="mx-auto w-full rounded-2xl border border-white/15 bg-slate-900/80 p-[1px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
             <div className="relative aspect-square w-full bg-slate-950/60">
-              {normalizedPreviewFen ? (
+              {shouldShowPendingBoard ? (
+                <div className="flex h-full w-full items-center justify-center bg-slate-950/65">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-slate-500/80" />
+                    <span>{isReplayTournamentTile ? "Loading final" : "Loading position"}</span>
+                  </div>
+                </div>
+              ) : (
                 <div className="pointer-events-none h-full w-full">
                   <BroadcastReactBoard
                     boardId={`${board.boardId}-mini`}
-                    position={normalizedPreviewFen}
+                    position={miniBoardPosition}
                     boardOrientation="white"
                     variant="mini"
                     autoSize
@@ -1358,12 +1481,6 @@ export const BoardsNavigationCard = ({
                     }}
                   />
                 </div>
-              ) : (
-                <div
-                  className={`absolute inset-0 rounded-2xl border border-white/10 bg-gradient-to-br from-slate-950/70 via-slate-900/70 to-black/80 ${
-                    !normalizedPreviewFen ? "animate-pulse" : ""
-                  }`}
-                />
               )}
             </div>
           </div>
@@ -1398,6 +1515,7 @@ export const BoardsNavigationCard = ({
           player={board.white}
           scorePill={scorePillWhite}
           clockLabel={whiteClockLabel}
+          hasClock={whiteHasClockData}
           isTimeTrouble={isWhiteInTimeTrouble}
         />
         {debugLabelEnabled ? (
@@ -1452,38 +1570,40 @@ export const BoardsNavigationCard = ({
       </div>
 
       <div className={`flex min-w-0 flex-1 flex-col justify-center ${compact ? "gap-0.5" : "gap-[2px]"}`}>
-        <div className={`transition-colors duration-200 ${showClocks && isWhiteInTimeTrouble ? "text-rose-50" : ""}`}>
+        <div className={`transition-colors duration-200 ${isWhiteInTimeTrouble ? "text-rose-50" : ""}`}>
           <PlayerLine player={board.white} compact={compact} scorePill={scorePillWhite} />
         </div>
-        {showClocks ? (
-          <div className={`mx-auto flex justify-center ${compact ? "w-[112px]" : "w-[128px]"}`}>
-            <div className={`flex w-full flex-nowrap items-center justify-center ${compact ? "gap-1" : "gap-1.5"}`}>
-              <span
-                className={`${pillBase} bg-slate-800/80 transition-colors transition-shadow duration-200 ${
-                  compact ? pillSm : pillMd
-                } ${
-                  isWhiteInTimeTrouble
+        <div className={`mx-auto flex justify-center ${compact ? "w-[112px]" : "w-[128px]"}`}>
+          <div className={`flex w-full flex-nowrap items-center justify-center ${compact ? "gap-1" : "gap-1.5"}`}>
+            <span
+              className={`${pillBase} bg-slate-800/80 transition-colors transition-shadow duration-200 ${
+                compact ? pillSm : pillMd
+              } ${
+                whiteHasClockData
+                  ? isWhiteInTimeTrouble
                     ? "border-rose-400/70 text-rose-50 shadow-[0_0_0_1px_rgba(248,113,113,0.25)]"
                     : "border-slate-600/60 text-slate-100"
-                }`}
-              >
-                {whiteTimeLabel ?? "—:—"}
-              </span>
-              <span
-                className={`${pillBase} bg-slate-800/80 transition-colors transition-shadow duration-200 ${
-                  compact ? pillSm : pillMd
-                } ${
-                  isBlackInTimeTrouble
+                  : "border-slate-700/60 text-slate-500/80"
+              }`}
+            >
+              {whiteClockLabel}
+            </span>
+            <span
+              className={`${pillBase} bg-slate-800/80 transition-colors transition-shadow duration-200 ${
+                compact ? pillSm : pillMd
+              } ${
+                blackHasClockData
+                  ? isBlackInTimeTrouble
                     ? "border-rose-400/70 text-rose-50 shadow-[0_0_0_1px_rgba(248,113,113,0.25)]"
                     : "border-slate-600/60 text-slate-100"
-                }`}
-              >
-                {blackTimeLabel ?? "—:—"}
-              </span>
-            </div>
+                  : "border-slate-700/60 text-slate-500/80"
+              }`}
+            >
+              {blackClockLabel}
+            </span>
           </div>
-        ) : null}
-        <div className={`transition-colors duration-200 ${showClocks && isBlackInTimeTrouble ? "text-rose-50" : ""}`}>
+        </div>
+        <div className={`transition-colors duration-200 ${isBlackInTimeTrouble ? "text-rose-50" : ""}`}>
           <PlayerLine player={board.black} compact={compact} scorePill={scorePillBlack} />
         </div>
       </div>

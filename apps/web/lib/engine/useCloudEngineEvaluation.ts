@@ -74,11 +74,9 @@ const mapCloudLineToStockfishLine = (line: CloudEngineLine): StockfishLine => {
   const mate = Number.isFinite(mateRaw) ? mateRaw : undefined;
   const depthRaw = Number(line?.depth);
   const depth = Number.isFinite(depthRaw) ? depthRaw : undefined;
-  const pv = Array.isArray(line?.pvMoves)
-    ? line.pvMoves.join(" ")
-    : typeof (line as { pv?: string }).pv === "string"
-      ? (line as { pv?: string }).pv.trim()
-      : "";
+  const pvValue = (line as { pv?: string }).pv;
+  const pvRaw = typeof pvValue === "string" ? pvValue : "";
+  const pv = Array.isArray(line?.pvMoves) ? line.pvMoves.join(" ") : pvRaw.trim();
 
   return { multipv, cp, mate, depth, pv };
 };

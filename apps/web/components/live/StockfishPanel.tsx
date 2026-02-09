@@ -676,7 +676,7 @@ export const StockfishLinesList = ({ lines, fen, emptyLabel = "" }: StockfishLin
         const label = formatLineEval(line.cp, line.mate);
         const pvMoves = typeof line.pv === "string" ? line.pv.trim().split(/\s+/).filter(Boolean) : [];
         const formattedPv = formatPvSan(fen, pvMoves).pvSan;
-        const pvText = formatPvPreview(formattedPv || line.pv || "");
+        const pvText = formatPvForDisplay(formattedPv || line.pv || "");
         return (
           <div
             key={line.multipv}

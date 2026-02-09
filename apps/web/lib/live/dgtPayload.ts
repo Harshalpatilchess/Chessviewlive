@@ -16,6 +16,7 @@ export type DgtBoardState = {
   opening?: string | null;
   whiteTimeMs?: number | null;
   blackTimeMs?: number | null;
+  clockUpdatedAtMs?: number | null;
   sideToMove?: "white" | "black" | null;
   status?: "live" | "finished" | "scheduled" | "final";
   result?: "1-0" | "0-1" | "1/2-1/2" | "½-½" | "*" | null;
@@ -25,4 +26,5 @@ export type DgtLivePayload = {
   tournamentSlug: string;
   round: number;
   boards: DgtBoardState[];
+  clocksAvailable?: boolean;
 };

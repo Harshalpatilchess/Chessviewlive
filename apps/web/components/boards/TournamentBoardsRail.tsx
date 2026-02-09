@@ -5,8 +5,8 @@ import { LayoutGrid, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import Flag from "@/components/live/Flag";
 import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
-import { formatChessClockMs } from "@/lib/live/clockFormat";
-import { buildBroadcastBoardPath } from "@/lib/paths";
+import { formatMiniBoardClockMs } from "@/lib/boards/miniBoardClock";
+import { buildViewerBoardPath } from "@/lib/paths";
 
 type TournamentBoardsRailProps = {
   boards: BoardNavigationEntry[];
@@ -79,15 +79,12 @@ export const TournamentBoardsRail = ({
         const displayResult = normalizedResult === "1/2-1/2" ? "\u00bd-\u00bd" : normalizedResult;
         const whiteHasClock = Number.isFinite(board.whiteTimeMs ?? NaN);
         const blackHasClock = Number.isFinite(board.blackTimeMs ?? NaN);
-        const hasClockData = whiteHasClock || blackHasClock;
-        const isLive = board.status === "live";
-        const showClocks = isLive && hasClockData;
-        const showResult = Boolean(displayResult) && !showClocks;
+        const showResult = Boolean(displayResult);
         const statusLabel = getBoardStatusLabel(board);
-        const showStatus = !showClocks && !showResult && statusLabel !== "\u2014";
-        const whiteClockLabel = showClocks && whiteHasClock ? formatChessClockMs(board.whiteTimeMs) : null;
-        const blackClockLabel = showClocks && blackHasClock ? formatChessClockMs(board.blackTimeMs) : null;
-        const boardHref = buildBroadcastBoardPath(board.boardId, mode, tournamentSlug);
+        const showStatus = !showResult && statusLabel !== "\u2014";
+        const whiteClockLabel = formatMiniBoardClockMs(whiteHasClock ? Number(board.whiteTimeMs) : null);
+        const blackClockLabel = formatMiniBoardClockMs(blackHasClock ? Number(board.blackTimeMs) : null);
+        const boardHref = buildViewerBoardPath(board.boardId, mode);
         const isActive = selectedBoardId === board.boardId;
 
         return (
@@ -131,20 +128,23 @@ export const TournamentBoardsRail = ({
                   </span>
                 ) : null}
               </div>
-              {showClocks ? (
-                <div className="flex items-center justify-center gap-2">
-                  {whiteClockLabel ? (
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300">
-                      {whiteClockLabel}
-                    </span>
-                  ) : null}
-                  {blackClockLabel ? (
-                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300">
-                      {blackClockLabel}
-                    </span>
-                  ) : null}
-                </div>
-              ) : showResult ? (
+              <div className="flex items-center justify-center gap-2">
+                <span
+                  className={`rounded-full border bg-white/5 px-2 py-0.5 text-[10px] font-semibold tabular-nums ${
+                    whiteHasClock ? "border-white/10 text-slate-300" : "border-slate-700/60 text-slate-500/80"
+                  }`}
+                >
+                  {whiteClockLabel}
+                </span>
+                <span
+                  className={`rounded-full border bg-white/5 px-2 py-0.5 text-[10px] font-semibold tabular-nums ${
+                    blackHasClock ? "border-white/10 text-slate-300" : "border-slate-700/60 text-slate-500/80"
+                  }`}
+                >
+                  {blackClockLabel}
+                </span>
+              </div>
+              {showResult ? (
                 <div className="flex items-center justify-center">
                   <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] font-semibold text-slate-200">
                     {displayResult}

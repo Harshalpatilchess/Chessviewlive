@@ -4,6 +4,15 @@ export type BroadcastViewMode = "live" | "replay";
 
 const BROADCAST_VIEW_ID_REGEX = /^(live|replay|reply)-(.+)$/i;
 
+const normalizeBroadcastBoardKey = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (/^\d+\.\d+$/i.test(trimmed)) {
+    return `board${trimmed}`;
+  }
+  return trimmed;
+};
+
 const resolveTournamentSlug = (boardId: string, tournamentId?: string) => {
   if (tournamentId && tournamentId.trim().length > 0) {
     return normalizeTournamentSlug(tournamentId);
@@ -29,12 +38,15 @@ export const resolveBoardIdFromKey = (tournamentSlug: string, boardKey: string) 
 };
 
 export const parseBroadcastViewId = (viewId: string) => {
-  const match = viewId.trim().match(BROADCAST_VIEW_ID_REGEX);
-  if (!match) return null;
-  const rawMode = match[1]?.toLowerCase();
-  const boardKey = match[2]?.trim();
-  if (!boardKey) return null;
+  const trimmed = viewId.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(BROADCAST_VIEW_ID_REGEX);
+  const rawMode = match?.[1]?.toLowerCase() ?? "replay";
+  const boardKeyRaw = (match?.[2] ?? trimmed).trim();
+  if (!boardKeyRaw) return null;
   const mode = rawMode === "reply" ? "replay" : (rawMode as BroadcastViewMode);
+  const boardKey = normalizeBroadcastBoardKey(boardKeyRaw);
+  if (!boardKey) return null;
   return { mode, boardKey };
 };
 
@@ -47,6 +59,9 @@ export const buildBroadcastBoardPath = (
   const boardKey = normalizeBoardKey(boardIdOrKey, tournamentSlug);
   return `/broadcast/${encodeURIComponent(tournamentSlug)}/${mode}-${encodeURIComponent(boardKey)}`;
 };
+
+export const buildViewerBoardPath = (boardId: string, mode: BroadcastViewMode) =>
+  `/${mode}/${encodeURIComponent(boardId)}`;
 
 export const buildBroadcastBoardPaths = (boardId: string, tournamentId?: string) => ({
   live: buildBroadcastBoardPath(boardId, "live", tournamentId),

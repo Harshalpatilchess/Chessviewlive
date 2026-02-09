@@ -5,11 +5,12 @@ export type TournamentConfig = {
   name: string;
   round: number;
   heroImage?: string | null;
-  placeholderFlag?: string | null;
+  flagCode?: "am" | "cn" | "gb" | "in" | "nl" | "no" | "qa" | "us";
   defaultFederation?: string | null;
   roundLabel?: string | null;
   startsAt?: string | null;
   endsAt?: string | null;
+  status?: "Live" | "Ongoing" | "Completed" | "Upcoming";
   participants?: number;
   timeControl?: string | null;
   location?: string | null;
@@ -51,6 +52,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     timeControl: "90 min/40 moves + 30 min + 30 sec/move",
     location: "Yerevan, Armenia",
     heroImage: "/tournaments/armenian-championship-highest-league-2026/hero.svg",
+    flagCode: "am",
   },
   {
     slug: "candidates2026",
@@ -58,7 +60,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 3",
     startsAt: "2026-03-12T14:00:00Z",
-    placeholderFlag: "\uD83C\uDDEE\uD83C\uDDF3",
+    flagCode: "in",
     topPlayers: [
       { name: "Praggnanandhaa", rating: 2766 },
       { name: "Nakamura", rating: 2775 },
@@ -72,7 +74,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 5",
     startsAt: "2026-05-18T12:00:00Z",
-    placeholderFlag: "\uD83C\uDDF3\uD83C\uDDF4",
+    flagCode: "no",
     topPlayers: [
       { name: "Carlsen", rating: 2830 },
       { name: "Firouzja", rating: 2760 },
@@ -86,7 +88,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 7",
     startsAt: "2026-01-20T11:00:00Z",
-    placeholderFlag: "\uD83C\uDDF3\uD83C\uDDF1",
+    flagCode: "nl",
     topPlayers: [
       { name: "Ding", rating: 2791 },
       { name: "Nepomniachtchi", rating: 2778 },
@@ -100,7 +102,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Stage 2",
     startsAt: "2025-11-02T15:00:00Z",
-    placeholderFlag: "\uD83C\uDDFA\uD83C\uDDF8",
+    flagCode: "us",
     topPlayers: [
       { name: "So", rating: 2757 },
       { name: "Dominguez", rating: 2740 },
@@ -114,7 +116,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 4",
     startsAt: "2025-08-20T17:00:00Z",
-    placeholderFlag: "\uD83C\uDDFA\uD83C\uDDF8",
+    flagCode: "us",
     topPlayers: [
       { name: "Caruana", rating: 2798 },
       { name: "Nakamura", rating: 2775 },
@@ -128,7 +130,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 6",
     startsAt: "2025-10-05T16:00:00Z",
-    placeholderFlag: "\uD83C\uDDFA\uD83C\uDDF8",
+    flagCode: "us",
     topPlayers: [
       { name: "Nakamura", rating: 2775 },
       { name: "So", rating: 2757 },
@@ -142,7 +144,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 2",
     startsAt: "2025-09-12T09:00:00Z",
-    placeholderFlag: "\uD83C\uDDEE\uD83C\uDDF3",
+    flagCode: "in",
     topPlayers: [
       { name: "Gukesh", rating: 2765 },
       { name: "Arjun", rating: 2751 },
@@ -156,7 +158,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Round 8",
     startsAt: "2025-12-01T10:00:00Z",
-    placeholderFlag: "\uD83C\uDDF6\uD83C\uDDE6",
+    flagCode: "qa",
     topPlayers: [
       { name: "Mamedyarov", rating: 2746 },
       { name: "Firouzja", rating: 2760 },
@@ -170,7 +172,7 @@ export const TOURNAMENTS: TournamentConfig[] = [
     round: DEFAULT_ROUND,
     roundLabel: "Stage 1",
     startsAt: "2025-07-28T18:00:00Z",
-    placeholderFlag: "\uD83C\uDDEC\uD83C\uDDE7",
+    flagCode: "gb",
     topPlayers: [
       { name: "Nakamura", rating: 2775 },
       { name: "Carlsen", rating: 2830 },

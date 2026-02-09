@@ -14,10 +14,12 @@ import type {
   Track,
   TrackPublication,
 } from "livekit-client";
+import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 import LiveHeaderControls from "@/components/viewer/LiveHeaderControls";
 import ViewerShell from "@/components/viewer/ViewerShell";
 import { DEFAULT_TOURNAMENT_SLUG, buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
 import { formatBoardContextLabel, formatBoardLabel } from "@/lib/boardContext";
+import { resolveTournamentName, type FavoriteGameEntry } from "@/lib/favoriteGames";
 import { WORLD_CUP_DEMO_PLIES, pliesFromPgn } from "@/lib/mockGames";
 import { movesToPlies, pliesToFenAt } from "@/lib/chess/pgn";
 import { buildBoardPaths, buildBroadcastBoardPath } from "@/lib/paths";
@@ -72,6 +74,8 @@ type LiveViewerProps = {
   tournamentId?: string;
   density?: "default" | "compact";
   variant?: "full" | "mini";
+  liveUpdatesEnabled?: boolean;
+  liveUpdatesIntervalMs?: number;
 };
 
 type Orientation = "white" | "black";
@@ -97,6 +101,8 @@ export function LiveViewer({
   tournamentId,
   density,
   variant = "full",
+  liveUpdatesEnabled = true,
+  liveUpdatesIntervalMs,
 }: LiveViewerProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -113,15 +119,20 @@ export function LiveViewer({
   const isEmbed =
     embedParam === "1" || (typeof embedParam === "string" && embedParam.toLowerCase() === "true");
   const debugParam = searchParams?.get("debug");
+  const paneParamRaw = searchParams?.get("pane");
   const allowStatsOverlay =
     (typeof debugParam === "string" && debugParam.toLowerCase() === "1") ||
     (typeof process !== "undefined" && process.env.ALLOW_DEV_STATS_OVERLAY === "true");
   const paneParam = useMemo(() => {
-    const pane = searchParams?.get("pane");
+    const pane = paneParamRaw;
     return pane === "boards" || pane === "live" || pane === "notation" || pane === "engine"
       ? pane
       : "notation";
-  }, [searchParams]);
+  }, [paneParamRaw]);
+  const paneForFavorites = useMemo(() => {
+    const pane = paneParamRaw;
+    return pane === "boards" || pane === "live" || pane === "notation" || pane === "engine" ? pane : undefined;
+  }, [paneParamRaw]);
   const enginePanelOpen = paneParam === "notation";
   const isMini = variant === "mini";
   const resolvedDensity = density ?? (isMini ? "compact" : "default");
@@ -131,11 +142,6 @@ export function LiveViewer({
     : isEmbed
       ? "flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden p-0"
       : "container mx-auto flex min-h-screen h-screen flex-col bg-slate-950 text-slate-100 overflow-hidden px-4";
-  const mediaContainerClass = isMini
-    ? undefined
-    : isCompact
-      ? "aspect-video w-full max-h-[24vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[28vh]"
-      : "aspect-video w-full max-h-[40vh] overflow-hidden rounded-2xl border border-white/10 bg-black shadow-sm lg:aspect-[16/8.5] lg:max-h-[48vh]";
   const controlsOverlayClass = isCompact
     ? "pointer-events-none absolute bottom-2 right-2 flex flex-wrap items-center justify-end gap-1 sm:bottom-2.5 sm:right-2.5 sm:gap-1.5"
     : "pointer-events-none absolute bottom-3 right-3 flex flex-wrap items-center justify-end gap-1.5 sm:bottom-4 sm:right-4 sm:gap-2";
@@ -176,15 +182,6 @@ export function LiveViewer({
   }, [tournamentId, boardId]);
   const whiteClockLabel = DEFAULT_PLAYER_CLOCK;
   const blackClockLabel = DEFAULT_PLAYER_CLOCK;
-  const liveStatus = (() => {
-    if (status === "connecting" || status === "idle" || connectingRef.current) {
-      return { label: "CONNECTING…", className: "bg-amber-500/90 text-white" };
-    }
-    if (status === "connected" && isLive) {
-      return { label: "LIVE", className: "bg-red-600 text-white" };
-    }
-    return { label: "OFFLINE", className: "bg-neutral-500/80 text-white" };
-  })();
   const tournamentLabel = useMemo(() => {
     const trimmed = tournamentId?.trim();
     return trimmed && trimmed.length > 0 ? trimmed : null;
@@ -218,6 +215,8 @@ export function LiveViewer({
   const liveFeedVersion = useTournamentLiveFeed({
     tournamentSlug: boardSelection.tournamentSlug,
     round: boardSelection.round,
+    enabled: liveUpdatesEnabled,
+    intervalMs: liveUpdatesIntervalMs,
   });
   const boardManifestGame = useMemo(
     () =>
@@ -405,6 +404,7 @@ export function LiveViewer({
     setDepthIndex,
     setMultiPv,
     setActiveProfileId,
+    lastError: engineError,
   } = useCloudEngineEvaluation(displayFen, { enabled: shouldFetchEval, debounceMs: evalDebounceMs });
   const handleProfileChange = useCallback(
     (value: EngineProfileId) => {
@@ -418,6 +418,7 @@ export function LiveViewer({
     },
     [setDepthIndex]
   );
+  const effectiveEngineError = engineEnabled ? engineError : null;
   const engineDisplayFen = engineEvaluatedFen ?? displayFen;
   const { value: evaluation, label: evaluationLabel, advantage: evaluationAdvantage } = useMemo<EvaluationBarMapping>(() => {
     if (!gaugeEnabled) {
@@ -1017,7 +1018,7 @@ export function LiveViewer({
             element.autoplay = true;
             const desiredMuted = lastMutedRef.current ?? shouldStartMuted;
             element.muted = desiredMuted;
-            element.className = "rounded-lg max-w-full";
+            element.className = "h-full w-full object-contain";
             videoRef.current = element;
             lastMutedRef.current = element.muted;
             setVideoEl(element);
@@ -1602,6 +1603,59 @@ export function LiveViewer({
     return () => window.removeEventListener("keydown", handleKey);
   }, [togglePiP, toggleFullscreen]);
 
+  const triggerSubscribeGate = useCallback(() => {
+    if (!isEmbed) return;
+    setSubscribeGateOpen(true);
+    if (typeof window === "undefined") return;
+    if (subscribeGateTimeoutRef.current) {
+      window.clearTimeout(subscribeGateTimeoutRef.current);
+    }
+    subscribeGateTimeoutRef.current = window.setTimeout(() => {
+      setSubscribeGateOpen(false);
+      subscribeGateTimeoutRef.current = null;
+    }, 5000);
+  }, [isEmbed]);
+
+  const handleBoardSelectBlocked = useCallback(() => {
+    triggerSubscribeGate();
+    return false;
+  }, [triggerSubscribeGate]);
+
+  const favoriteEntry = useMemo<FavoriteGameEntry>(() => {
+    const tournamentSlug = boardSelection.tournamentSlug;
+    const tournamentName = resolveTournamentName(tournamentSlug);
+    const roundLabel = `Round ${boardSelection.round}`;
+    const boardLabel = `Board ${boardSelection.round}.${boardSelection.board}`;
+    const normalizedBoardId = buildBoardIdentifier(
+      tournamentSlug,
+      boardSelection.round,
+      boardSelection.board
+    );
+    return {
+      id: normalizedBoardId,
+      tournamentSlug,
+      tournamentName,
+      round: boardSelection.round,
+      roundLabel,
+      boardId: normalizedBoardId,
+      boardLabel,
+      whitePlayer: whiteDisplayName,
+      blackPlayer: blackDisplayName,
+      fen: displayFen ?? null,
+      pane: paneForFavorites,
+      mode: "live",
+      updatedAt: 0,
+    };
+  }, [
+    boardSelection.board,
+    boardSelection.round,
+    boardSelection.tournamentSlug,
+    displayFen,
+    paneForFavorites,
+    whiteDisplayName,
+    blackDisplayName,
+  ]);
+
   if (tournamentId && !isTournamentBoardConfigured) {
     return (
       <main className={mainClassName}>
@@ -1679,26 +1733,9 @@ export function LiveViewer({
     </div>
   ) : null;
 
-  const triggerSubscribeGate = useCallback(() => {
-    if (!isEmbed) return;
-    setSubscribeGateOpen(true);
-    if (typeof window === "undefined") return;
-    if (subscribeGateTimeoutRef.current) {
-      window.clearTimeout(subscribeGateTimeoutRef.current);
-    }
-    subscribeGateTimeoutRef.current = window.setTimeout(() => {
-      setSubscribeGateOpen(false);
-      subscribeGateTimeoutRef.current = null;
-    }, 5000);
-  }, [isEmbed]);
-
-  const handleBoardSelectBlocked = useCallback(() => {
-    triggerSubscribeGate();
-    return false;
-  }, [triggerSubscribeGate]);
-
   const headerControls = (
     <div className={isMini ? "flex items-center gap-2" : "flex items-center gap-2"}>
+      <FavoriteToggleButton entry={favoriteEntry} density={resolvedDensity} />
       <LiveHeaderControls
         boardId={boardId}
         tournamentSlug={boardSelection.tournamentSlug}
@@ -1747,6 +1784,7 @@ export function LiveViewer({
         boardDomId="cv-live-board"
         boardOrientation={orientation}
         boardPosition={displayFen}
+        officialBoardPosition={boardPosition}
         showEval={gaugeEnabled}
         evaluation={evaluation}
         evaluationLabel={evaluationLabel}
@@ -1803,13 +1841,11 @@ export function LiveViewer({
         onDeleteAnalysisLine={deleteAnalysisLine}
         onDeleteAnalysisFromHere={deleteAnalysisFromHere}
         onPieceDrop={handlePieceDrop}
-        mediaContainerClass={mediaContainerClass}
         onBoardSelect={isEmbed ? handleBoardSelectBlocked : undefined}
         variant={variant}
         videoPane={{
           containerRef: mediaWrapperRef,
           innerRef: mediaRef,
-          statusPill: liveStatus,
           secondaryPill: videoRoomLabel,
           overlay: videoOverlay,
           controlsOverlay: controlsRow,
@@ -1823,6 +1859,7 @@ export function LiveViewer({
           engineProfileId: activeProfileId,
           engineProfile: activeProfileConfig,
           setEngineProfileId: handleProfileChange,
+          engineError: effectiveEngineError,
           multiPv,
           depthIndex,
           depthSteps,

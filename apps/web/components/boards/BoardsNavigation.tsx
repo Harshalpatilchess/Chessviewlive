@@ -7,6 +7,14 @@ import { Chess } from "chess.js";
 import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
 import Flag from "@/components/live/Flag";
 import TitleBadge from "@/components/boards/TitleBadge";
+import {
+  flushLatestFenCache,
+  getStartFen,
+  hydrateLatestFenCache,
+  isStartFen,
+  readLatestFen,
+  writeLatestFen,
+} from "@/lib/boards/latestFenCache";
 import type { TournamentGame } from "@/lib/tournamentManifest";
 import { buildBoardIdentifier, normalizeBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
 import type { DgtBoardState, DgtLivePayload } from "@/lib/live/dgtPayload";
@@ -15,10 +23,15 @@ import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
 import { getTournamentGameManifest } from "@/lib/tournamentManifest";
 import { getMiniEvalCp } from "@/lib/miniEval";
 import { mapEvaluationToBar } from "@/lib/engine/evalMapping";
+import {
+  canRunMiniBoardEvalRequests,
+  isMiniBoardEvalFeatureEnabled,
+  recordMiniBoardEvalFailure,
+} from "@/lib/engine/miniBoardEvalGate";
 import { getWorldCupPgnForBoard } from "@/lib/demoPgns";
 import { pgnToDgtBoard } from "@/lib/live/pgnToDgtPayload";
 import { getBoardStatusLabel, normalizeResultValue } from "@/lib/boards/boardStatus";
-import { buildBroadcastBoardPath } from "@/lib/paths";
+import { buildViewerBoardPath } from "@/lib/paths";
 
 type BoardsNavigationProps = {
   boards?: BoardNavigationEntry[] | null;
@@ -33,11 +46,14 @@ type BoardsNavigationProps = {
   layout?: "grid" | "list";
   variant?: "default" | "tournament";
   viewerEvalBars?: boolean;
+  liveUpdatesEnabled?: boolean;
+  liveUpdatesIntervalMs?: number;
   debug?: boolean;
   debugRoundId?: string | null;
   sidebarOnly?: boolean;
   onBoardClick?: (board: BoardNavigationEntry) => boolean | void;
   emptyLabel?: string;
+  buildBoardHref?: (board: BoardNavigationEntry) => string;
 };
 
 const WARM_LITE_PREFETCH_COUNT = 4;
@@ -192,8 +208,7 @@ const buildFenFromMoveList = (moveList?: string[] | null): string | null => {
   const chess = new Chess();
   for (const move of moveList) {
     try {
-      // chess.js typings omit sloppy option; keep runtime behavior.
-      chess.move(move, { sloppy: true } as { sloppy?: boolean });
+      chess.move(move, { strict: false });
     } catch {
       break;
     }
@@ -219,13 +234,30 @@ const buildResolvedFenEntry = (
 };
 
 const hasBoardStartSignal = (entry: BoardNavigationEntry): boolean => {
+  const normalizedResult = normalizeResultValue(entry.result);
+  const isLiveResult = normalizedResult === "*";
+  const hasFinishedResult = Boolean(normalizedResult && normalizedResult !== "*");
   const moveCount = Array.isArray(entry.moveList) ? entry.moveList.length : 0;
   const hasClockData =
     Number.isFinite(Number(entry.whiteTimeMs ?? NaN)) || Number.isFinite(Number(entry.blackTimeMs ?? NaN));
   const hasSideToMove = Boolean(entry.sideToMove);
   const hasEval = Number.isFinite(Number(entry.evaluation ?? NaN));
-  return entry.status === "live" || moveCount > 0 || hasClockData || hasSideToMove || hasEval;
+  return (
+    entry.status === "live" ||
+    entry.status === "final" ||
+    isLiveResult ||
+    hasFinishedResult ||
+    moveCount > 0 ||
+    hasClockData ||
+    hasSideToMove ||
+    hasEval
+  );
 };
+
+const hasExplicitStartSignal = (entry: BoardNavigationEntry): boolean =>
+  entry.miniBoardExplicitStart === true ||
+  entry.status === "scheduled" ||
+  (Array.isArray(entry.moveList) && entry.moveList.length === 0 && !hasBoardStartSignal(entry));
 
 const resolveLivePreviewFen = (
   entry: BoardNavigationEntry,
@@ -251,12 +283,18 @@ export const BoardsNavigation = ({
   layout = "grid",
   variant = "default",
   viewerEvalBars = false,
+  liveUpdatesEnabled = true,
+  liveUpdatesIntervalMs,
   debug = false,
   debugRoundId = null,
   sidebarOnly = false,
   onBoardClick,
   emptyLabel = "No other boards available for this round yet.",
+  buildBoardHref,
 }: BoardsNavigationProps) => {
+  useEffect(() => {
+    hydrateLatestFenCache();
+  }, []);
   const resolvedLayout = sidebarOnly ? "list" : variant === "tournament" ? "grid" : layout;
   const router = useRouter();
   const pathname = usePathname();
@@ -283,6 +321,8 @@ export const BoardsNavigation = ({
   const warmTriggeredRef = useRef(false);
   const [warmBoardIds, setWarmBoardIds] = useState<Record<string, true>>({});
   const viewerEvalBarsEnabled = viewerEvalBars && variant === "default";
+  const miniBoardEvalFeatureEnabled = isMiniBoardEvalFeatureEnabled();
+  const miniBoardEvalRequestsAllowed = canRunMiniBoardEvalRequests();
   const [navEvalMap, setNavEvalMap] = useState<Record<string, NavEvalEntry>>({});
   const navEvalMapRef = useRef<Record<string, NavEvalEntry>>({});
   const navResolvedFenMapRef = useRef<Record<string, NavResolvedFenEntry>>({});
@@ -374,6 +414,8 @@ export const BoardsNavigation = ({
   const liveFeedVersion = useTournamentLiveFeed({
     tournamentSlug: liveFeedConfig?.tournamentSlug ?? null,
     round: liveFeedConfig?.round ?? null,
+    enabled: liveUpdatesEnabled,
+    intervalMs: liveUpdatesIntervalMs,
   });
   const resolveBoardKey = useCallback(
     (boardId: string) =>
@@ -494,8 +536,65 @@ export const BoardsNavigation = ({
       });
     })();
 
-    return baseResolvedBoards;
-  }, [baseBoards, liveFeedConfig, liveFeedVersion, resolveDerivedFen]);
+    if (variant !== "tournament") {
+      return baseResolvedBoards;
+    }
+
+    return baseResolvedBoards.map(entry => {
+      const keyInput = {
+        boardId: entry.boardId,
+        tournamentSlug: tournamentSlug ?? liveFeedConfig?.tournamentSlug ?? null,
+        round: liveFeedConfig?.round ?? null,
+        boardNumber: entry.boardNumber,
+      };
+      const fromPreview = normalizeFen(entry.previewFen);
+      const fromFinal = normalizeFen(entry.finalFen);
+      const fromMoves = resolveDerivedFen(entry.boardId, entry.moveList);
+      const explicitStartSignal = hasExplicitStartSignal(entry);
+      const startedSignal = hasBoardStartSignal(entry);
+      let resolvedFen = fromPreview ?? fromFinal ?? fromMoves ?? null;
+      let explicitStart = entry.miniBoardExplicitStart === true;
+
+      if (resolvedFen && isStartFen(resolvedFen)) {
+        if (explicitStartSignal) {
+          explicitStart = true;
+        } else {
+          resolvedFen = null;
+        }
+      }
+
+      if (!resolvedFen) {
+        const cached = readLatestFen(keyInput);
+        const cachedFen = normalizeFen(cached?.fen);
+        if (cachedFen && (!isStartFen(cachedFen) || cached?.explicitStart === true)) {
+          resolvedFen = cachedFen;
+          explicitStart = cached?.explicitStart === true;
+        }
+      }
+
+      if (!resolvedFen && explicitStartSignal && !startedSignal) {
+        resolvedFen = getStartFen();
+        explicitStart = true;
+      }
+
+      if (resolvedFen) {
+        writeLatestFen(keyInput, resolvedFen, { explicitStart });
+      }
+
+      const pending = !resolvedFen && startedSignal && !explicitStart;
+      const miniEvalCp = resolvedFen ? getMiniEvalCp(resolvedFen) : entry.miniEvalCp ?? null;
+      return {
+        ...entry,
+        previewFen: resolvedFen,
+        miniEvalCp,
+        miniBoardPending: pending,
+        miniBoardExplicitStart: explicitStart,
+      };
+    });
+  }, [baseBoards, liveFeedConfig, liveFeedVersion, resolveDerivedFen, tournamentSlug, variant]);
+  useEffect(() => {
+    flushLatestFenCache();
+  }, [resolvedBoards]);
   const isEmpty = resolvedBoards.length === 0;
   const hasLiveClocks = useMemo(() => {
     return resolvedBoards.some(board => {
@@ -562,7 +661,8 @@ export const BoardsNavigation = ({
         })
       : sidebarBoards ?? resolvedBoards;
   const autoEnableEnabled =
-    variant === "default" || (tournamentSlug === "worldcup2025" && variant === "tournament");
+    miniBoardEvalFeatureEnabled &&
+    (variant === "default" || (tournamentSlug === "worldcup2025" && variant === "tournament"));
   const autoEnableCandidates = autoEnableEnabled ? resolvedBoards.slice(0, WARM_LITE_PREFETCH_COUNT) : [];
   const autoEnabledBoardIds = autoEnableCandidates.reduce<Record<string, true>>((acc, board) => {
     acc[board.boardId] = true;
@@ -744,6 +844,7 @@ export const BoardsNavigation = ({
 }, [navDebugEnabled, navResolvedFenMap, resolvedBoards, shouldLogBoard]);
 
   useEffect(() => {
+    if (!miniBoardEvalRequestsAllowed) return;
     if (!viewerEvalBarsEnabled || resolvedBoards.length === 0) return;
     const visibleMap = navVisibleBoardIdsRef.current;
     const now = Date.now();
@@ -870,6 +971,7 @@ export const BoardsNavigation = ({
     });
   }, [
     getEvalKey,
+    miniBoardEvalRequestsAllowed,
     navDebugCacheEnabled,
     navDebugEnabled,
     navEvalPendingMap,
@@ -908,6 +1010,7 @@ export const BoardsNavigation = ({
   );
 
   useEffect(() => {
+    if (!miniBoardEvalRequestsAllowed) return;
     if (!viewerEvalBarsEnabled || resolvedBoards.length === 0) return;
     const queueState = coldStartQueueRef.current;
     const eligibleSet = new Set<string>();
@@ -972,6 +1075,7 @@ export const BoardsNavigation = ({
   }, [
     debug,
     getEvalKey,
+    miniBoardEvalRequestsAllowed,
     navDebugEnabled,
     navEvalPendingMap,
     navResolvedFenMap,
@@ -2030,6 +2134,15 @@ export const BoardsNavigation = ({
 
   const runEvalQueue = useCallback(() => {
     const queueState = navEvalQueueRef.current;
+    if (!canRunMiniBoardEvalRequests()) {
+      if (queueState.order.length > 0) {
+        queueState.order = [];
+      }
+      if (queueState.byId.size > 0) {
+        queueState.byId.clear();
+      }
+      return;
+    }
     while (queueState.order.length > 0 && inflightRef.current.size < NAV_EVAL_MAX_INFLIGHT) {
       const hasTop = queueState.order.some(id => queueState.byId.get(id)?.tier === "top");
       const hasRest = queueState.order.some(id => queueState.byId.get(id)?.tier === "rest");
@@ -2140,49 +2253,60 @@ export const BoardsNavigation = ({
 
       const startedAt = now;
       const runRequest = async (): Promise<NavEvalOutcome> => {
-        const response = await fetch(requestUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          cache: "no-store",
-        });
-        const status = response.status;
-        let json: LiteEvalApiResponse | null = null;
         try {
-          json = (await response.json()) as LiteEvalApiResponse;
-        } catch {
-          json = null;
-        }
-        const line = Array.isArray(json?.lines) ? json.lines[0] : undefined;
-        const cpRaw = Number(line?.scoreCp);
-        const mateRaw = Number(line?.scoreMate);
-        if (navDebugEnabled) {
-          console.log("NAV_EVAL_RESPONSE", {
-            boardId: task.boardId,
-            fenHash6: task.cacheKey6,
-            hasCp: Number.isFinite(cpRaw),
-            hasMate: Number.isFinite(mateRaw),
+          const response = await fetch(requestUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            cache: "no-store",
           });
-        }
-        if (!response.ok) {
+          const status = response.status;
+          let json: LiteEvalApiResponse | null = null;
+          try {
+            json = (await response.json()) as LiteEvalApiResponse;
+          } catch {
+            json = null;
+          }
+          const line = Array.isArray(json?.lines) ? json.lines[0] : undefined;
+          const cpRaw = Number(line?.scoreCp);
+          const mateRaw = Number(line?.scoreMate);
+          if (navDebugEnabled) {
+            console.log("NAV_EVAL_RESPONSE", {
+              boardId: task.boardId,
+              fenHash6: task.cacheKey6,
+              hasCp: Number.isFinite(cpRaw),
+              hasMate: Number.isFinite(mateRaw),
+            });
+          }
+          if (!response.ok) {
+            recordMiniBoardEvalFailure({ source: "navigation", status });
+            return {
+              eval: null,
+              ok: false,
+              status,
+              errorMessage: json?.error ?? "lite eval failed",
+            };
+          }
+          const evalPayload =
+            Number.isFinite(mateRaw) ? { mate: mateRaw } : Number.isFinite(cpRaw) ? { cp: cpRaw } : null;
+          if (!evalPayload) {
+            return {
+              eval: null,
+              ok: false,
+              status,
+              errorMessage: json?.error ?? "lite eval failed",
+            };
+          }
+          return { eval: evalPayload, ok: true, status, errorMessage: null };
+        } catch (error) {
+          recordMiniBoardEvalFailure({ source: "navigation", status: null, error });
           return {
             eval: null,
             ok: false,
-            status,
-            errorMessage: json?.error ?? "lite eval failed",
+            status: 0,
+            errorMessage: "lite eval failed",
           };
         }
-        const evalPayload =
-          Number.isFinite(mateRaw) ? { mate: mateRaw } : Number.isFinite(cpRaw) ? { cp: cpRaw } : null;
-        if (!evalPayload) {
-          return {
-            eval: null,
-            ok: false,
-            status,
-            errorMessage: json?.error ?? "lite eval failed",
-          };
-        }
-        return { eval: evalPayload, ok: true, status, errorMessage: null };
       };
 
       const promise = runRequest();
@@ -2247,8 +2371,8 @@ export const BoardsNavigation = ({
           }
           if (task.cacheKeyHash) {
             fenEvalCacheRef.current[task.cacheKeyHash] = {
-              cp: result.eval.cp,
-              mate: result.eval.mate,
+              cp: evalResult.cp,
+              mate: evalResult.mate,
               normalized,
               ts: Date.now(),
             };
@@ -2268,10 +2392,10 @@ export const BoardsNavigation = ({
                 boardId: task.boardId,
                 appliedFenHash6: appliedRequestHash6,
                 appliedFenSource: task.resolvedFen.fenSource,
-                cp: result.eval.cp ?? null,
-                mate: result.eval.mate ?? null,
+                cp: evalResult.cp ?? null,
+                mate: evalResult.mate ?? null,
                 currentResolvedFenHash6,
-                line: `EVAL_APPLY boardId=${task.boardId} key=${boardKey} appliedHash6=${appliedRequestHash6} source=${task.resolvedFen.fenSource} currentHash6=${currentResolvedFenHash6} cp=${result.eval.cp ?? "null"} mate=${result.eval.mate ?? "null"} mismatch=${mismatch}`,
+                line: `EVAL_APPLY boardId=${task.boardId} key=${boardKey} appliedHash6=${appliedRequestHash6} source=${task.resolvedFen.fenSource} currentHash6=${currentResolvedFenHash6} cp=${evalResult.cp ?? "null"} mate=${evalResult.mate ?? "null"} mismatch=${mismatch}`,
               });
               if (mismatch) {
                 navMismatchSamplesRef.current.push(Date.now());
@@ -2483,6 +2607,7 @@ export const BoardsNavigation = ({
   }, [warmCandidates, warmEnabled]);
 
   useEffect(() => {
+    if (!miniBoardEvalRequestsAllowed) return;
     if (!viewerEvalBarsEnabled || resolvedBoards.length === 0) return;
     const queueState = navEvalQueueRef.current;
     const coldState = coldStartQueueRef.current;
@@ -2614,6 +2739,7 @@ export const BoardsNavigation = ({
     enqueueEvalTask,
     getEvalKey,
     markColdStartApplied,
+    miniBoardEvalRequestsAllowed,
     navDebugCacheEnabled,
     navDebugEnabled,
     navEvalPendingMap,
@@ -2625,6 +2751,7 @@ export const BoardsNavigation = ({
   ]);
 
   useEffect(() => {
+    if (!miniBoardEvalRequestsAllowed) return;
     if (!viewerEvalBarsEnabled || resolvedBoards.length === 0) return;
     const firstBoard = resolvedBoards[0];
     const firstBoardFenHash = firstBoard ? navResolvedFenMap[firstBoard.boardId]?.fenHash ?? "" : "";
@@ -2820,6 +2947,7 @@ export const BoardsNavigation = ({
     enqueueEvalTask,
     getEvalKey,
     markColdStartApplied,
+    miniBoardEvalRequestsAllowed,
     navDebugCacheEnabled,
     navDebugEnabled,
     navEvalPendingMap,
@@ -2896,8 +3024,8 @@ export const BoardsNavigation = ({
           const isFinished = board.status === "final" || Boolean(normalizedResult);
           const statusMode = isFinished ? "replay" : "live";
           const resolvedMode = variant === "tournament" ? statusMode : mode ?? statusMode;
-          const baseHref = buildBroadcastBoardPath(board.boardId, resolvedMode, tournamentSlug);
-          const href = `${baseHref}${linkQuery}`;
+          const baseHref = buildViewerBoardPath(board.boardId, resolvedMode);
+          const href = buildBoardHref ? buildBoardHref(board) : `${baseHref}${linkQuery}`;
           const isSelected = selectedBoardId === board.boardId;
           const rowClass = isSelected
             ? "border-sky-400/70 bg-slate-800/90 text-slate-100"
@@ -3031,6 +3159,7 @@ export const BoardsNavigation = ({
                   })()}
                   warmLiteEval={Boolean(warmBoardIds[board.boardId])}
                   autoEvalEnabled={Boolean(autoEnabledBoardIds[board.boardId])}
+                  buildBoardHref={buildBoardHref}
                   onBoardClick={onBoardClick}
                   onDebugVisibilityChange={handleDebugVisibilityChange}
                 />
@@ -3080,6 +3209,7 @@ export const BoardsNavigation = ({
             })()}
             warmLiteEval={Boolean(warmBoardIds[board.boardId])}
             autoEvalEnabled={Boolean(autoEnabledBoardIds[board.boardId])}
+            buildBoardHref={buildBoardHref}
             onBoardClick={onBoardClick}
             onDebugVisibilityChange={handleDebugVisibilityChange}
           />

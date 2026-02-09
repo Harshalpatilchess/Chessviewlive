@@ -1,6 +1,11 @@
 import "server-only";
 
-import { deriveFenFromPgn, type PgnParseMode } from "@/lib/chess/pgnServer";
+import {
+  deriveFenFromPgn,
+  extractLatestClockPairFromPgn,
+  getSideToMoveFromFen,
+  type PgnParseMode,
+} from "@/lib/chess/pgnServer";
 
 const LICHESS_BROADCAST_BASE = "https://lichess.org/api/broadcast";
 const TOURNAMENT_TTL_MS = 20000;
@@ -41,6 +46,10 @@ export type LichessBroadcastBoard = {
   status: "live" | "final" | "scheduled";
   result: "1-0" | "0-1" | "1/2-1/2" | "½-½" | "*" | null;
   moveList: string[];
+  whiteTimeMs?: number | null;
+  blackTimeMs?: number | null;
+  sideToMove?: "white" | "black" | null;
+  clockUpdatedAtMs?: number | null;
 };
 
 export type LichessBroadcastRoundSnapshot = {
@@ -381,6 +390,7 @@ const parseBoardsFromPgn = (
 } => {
   const games = splitPgnGames(pgn);
   const boards: LichessBroadcastBoard[] = [];
+  const parsedAtMs = Date.now();
   let firstGameDebug: PgnRoundParseDebug["firstGame"] = null;
   games.forEach((game, index) => {
     const headers = parsePgnHeaders(game);
@@ -413,6 +423,15 @@ const parseBoardsFromPgn = (
     const boardNo = parseBoardNumber(headers, index + 1);
     const parsed = deriveFenFromPgn(game);
     const moveList = parsed.moveList ?? [];
+    const sideToMove = getSideToMoveFromFen(parsed.fen);
+    const latestClockPair = extractLatestClockPairFromPgn(game, {
+      sideToMove,
+      fen: parsed.fen,
+      moveCount: moveList.length,
+    });
+    const hasClockData =
+      Number.isFinite(latestClockPair.whiteTimeMs ?? NaN) ||
+      Number.isFinite(latestClockPair.blackTimeMs ?? NaN);
     if (!firstGameDebug) {
       const parseIssue =
         moveList.length > 0
@@ -444,6 +463,10 @@ const parseBoardsFromPgn = (
       status,
       result,
       moveList,
+      whiteTimeMs: latestClockPair.whiteTimeMs,
+      blackTimeMs: latestClockPair.blackTimeMs,
+      sideToMove: latestClockPair.sideToMove ?? sideToMove,
+      clockUpdatedAtMs: hasClockData ? parsedAtMs : null,
     });
   });
   return {

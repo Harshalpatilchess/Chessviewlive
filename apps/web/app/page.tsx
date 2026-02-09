@@ -1,21 +1,25 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
+import { headers } from "next/headers";
 import {
   Archive,
+  Heart,
   LayoutGrid,
   Menu,
   MessageCircle,
   Radio,
   Search,
-  Trophy,
   Users,
 } from "lucide-react";
 import InstallAppCard from "@/components/site/InstallAppCard";
-import TournamentHeroImage from "@/components/site/TournamentHeroImage";
+import HomeSidebarFooterNav from "@/components/site/HomeSidebarFooterNav";
+import SidebarToggleInput from "@/components/site/SidebarToggleInput";
+import TournamentBannerCard from "@/components/site/TournamentBannerCard";
 import { LiveViewer } from "@/components/viewer/LiveViewer";
 import ReplayBoardPage from "@/app/replay/[boardId]/page";
 import { DEFAULT_TOURNAMENT_SLUG, normalizeTournamentSlug } from "@/lib/boardId";
+import { getTournamentImageBySlug } from "@/lib/tournamentImages";
 import { TOURNAMENTS } from "@/lib/tournamentCatalog";
 import {
   getTournamentBoardsForRound,
@@ -41,14 +45,53 @@ type TournamentSummary = {
   topRating: number | null;
   topPlayer: string | null;
   heroImage?: string | null;
-  placeholderFlag?: string | null;
+  flagCode?: string | null;
   roundLabel?: string | null;
   startsAt?: string | null;
+  endsAt?: string | null;
   topPlayers?: Array<{ name: string; rating: number }>;
   isLive: boolean;
   isPast: boolean;
+  status?: "Live" | "Ongoing" | "Completed" | "Upcoming";
 };
 
+type DiscoveryRound = {
+  id: string;
+  slug: string;
+  name: string;
+};
+
+type DiscoveryItem = {
+  tournament: {
+    slug: string;
+    name: string;
+  };
+  current: {
+    kind: "live";
+    round: DiscoveryRound;
+  };
+};
+
+type DiscoveryResponse = {
+  source: "discovery";
+  fetchedAt?: string;
+  items: DiscoveryItem[];
+  error: string | null;
+};
+
+type BroadcastCardItem = {
+  slug: string;
+  name: string;
+  roundLabel: string;
+  timeLabel?: string | null;
+  status: "Live" | "Ongoing" | "Completed" | "Upcoming";
+  heroImage?: string | null;
+  logoImage?: string | null;
+  flagCode?: string | null;
+  sortDateMs: number | null;
+  isLive: boolean;
+  isPast: boolean;
+};
 
 const resolveParam = (value?: string | string[]) => {
   if (Array.isArray(value)) return value[0];
@@ -82,29 +125,59 @@ const normalizeFilter = (value?: string): "all" | "current" | "past" | "top" => 
   return "all";
 };
 
-const formatRelativeTime = (target: Date, now: Date = new Date()) => {
-  const diffSeconds = Math.round((target.getTime() - now.getTime()) / 1000);
-  const absSeconds = Math.abs(diffSeconds);
-  const rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+const normalizeTournamentName = (value: string) =>
+  value.replace(/[—–]/g, " ").replace(/\s+/g, " ").trim();
 
-  if (absSeconds < 60) return rtf.format(diffSeconds, "second");
-  const diffMinutes = Math.round(diffSeconds / 60);
-  if (Math.abs(diffMinutes) < 60) return rtf.format(diffMinutes, "minute");
-  const diffHours = Math.round(diffMinutes / 60);
-  if (Math.abs(diffHours) < 24) return rtf.format(diffHours, "hour");
-  const diffDays = Math.round(diffHours / 24);
-  if (Math.abs(diffDays) < 30) return rtf.format(diffDays, "day");
-  const diffMonths = Math.round(diffDays / 30);
-  if (Math.abs(diffMonths) < 12) return rtf.format(diffMonths, "month");
-  const diffYears = Math.round(diffMonths / 12);
-  return rtf.format(diffYears, "year");
+const formatStartDate = (iso: string) => {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(date);
 };
 
-export default function Home({ searchParams }: HomeProps) {
-  const filterParam = resolveParam(searchParams?.filter);
-  const queryParam = resolveParam(searchParams?.q);
+const deriveBroadcastStatus = ({
+  summary,
+  discovery,
+}: {
+  summary: TournamentSummary | null;
+  discovery: DiscoveryItem | null;
+}): "Live" | "Ongoing" | "Completed" | "Upcoming" => {
+  if (discovery?.current?.kind === "live") return "Live";
+  if (summary?.status) return summary.status;
+  if (summary?.isLive) return "Live";
+  if (summary?.isPast) return "Completed";
+  return "Upcoming";
+};
+
+const fetchDiscoveryLive = async (): Promise<DiscoveryResponse | null> => {
+  try {
+    const headerList = await headers();
+    const host = headerList.get("host");
+    const proto = headerList.get("x-forwarded-proto") ?? "http";
+    const baseUrl = host ? `${proto}://${host}` : "http://localhost:3000";
+    const res = await fetch(`${baseUrl}/api/discovery/live`, {
+      next: { revalidate: 45 },
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as DiscoveryResponse;
+    if (!data || !Array.isArray(data.items)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+};
+
+export default async function Home({ searchParams }: HomeProps) {
+  const sp = await Promise.resolve(searchParams as Record<string, string | string[] | undefined>);
+  const filterParam = resolveParam(sp?.filter);
+  const queryParam = resolveParam(sp?.q);
   const activeFilter = normalizeFilter(filterParam);
   const query = queryParam?.trim().toLowerCase() ?? "";
+  const discoveryResponse = await fetchDiscoveryLive();
+  const discoveryItems = discoveryResponse?.items ?? [];
 
   const summaries = TOURNAMENTS.map(tournament => {
     const boards = getTournamentBoardsForRound(tournament.slug, tournament.round) ?? [];
@@ -125,6 +198,62 @@ export default function Home({ searchParams }: HomeProps) {
     } satisfies TournamentSummary;
   });
 
+  const curatedBySlug = new Map(
+    summaries.map(summary => [
+      normalizeTournamentSlug(summary.slug, summary.slug),
+      summary,
+    ])
+  );
+
+  const discoveryBySlug = new Map<string, DiscoveryItem>();
+  discoveryItems.forEach(item => {
+    const normalizedSlug = normalizeTournamentSlug(item.tournament.slug, item.tournament.slug);
+    if (!discoveryBySlug.has(normalizedSlug)) {
+      discoveryBySlug.set(normalizedSlug, item);
+    }
+  });
+
+  const mergedSlugs = new Set<string>([...curatedBySlug.keys(), ...discoveryBySlug.keys()]);
+  const mergedBroadcasts: BroadcastCardItem[] = Array.from(mergedSlugs).map(slug => {
+    const summary = curatedBySlug.get(slug) ?? null;
+    const discovery = discoveryBySlug.get(slug) ?? null;
+    const roundLabel =
+      discovery?.current.round.name ??
+      summary?.roundLabel ??
+      `Round ${summary?.round ?? 1}`;
+    const startsAt = summary?.startsAt ? new Date(summary.startsAt) : null;
+    const endsAt = summary?.endsAt ? new Date(summary.endsAt) : null;
+    const startsAtMs =
+      startsAt && Number.isFinite(startsAt.getTime()) ? startsAt.getTime() : null;
+    const endsAtMs =
+      endsAt && Number.isFinite(endsAt.getTime()) ? endsAt.getTime() : null;
+    const sortDateMs = startsAtMs ?? endsAtMs ?? null;
+    const formattedStart = summary?.startsAt ? formatStartDate(summary.startsAt) : null;
+    const timeLabel = discovery ? null : formattedStart ? `Starts ${formattedStart}` : null;
+    const rawName = summary?.name ?? discovery?.tournament.name ?? slug;
+    const tournamentImages = getTournamentImageBySlug(slug, rawName);
+    const heroImage = tournamentImages.heroImage ?? null;
+    const logoImage = tournamentImages.logoImage ?? null;
+    const flagCode = tournamentImages.flagCode ?? null;
+    const isLive = discovery ? true : summary?.isLive ?? false;
+    const isPast = discovery ? false : summary?.isPast ?? false;
+    const status = deriveBroadcastStatus({ summary, discovery });
+
+    return {
+      slug,
+      name: normalizeTournamentName(rawName),
+      roundLabel,
+      timeLabel,
+      status,
+      heroImage,
+      logoImage,
+      flagCode,
+      sortDateMs,
+      isLive,
+      isPast,
+    };
+  });
+
   const currentTournamentOrder = summaries
     .filter(summary => summary.isLive)
     .map(summary => summary.slug);
@@ -134,14 +263,28 @@ export default function Home({ searchParams }: HomeProps) {
     currentTournamentOrder,
   });
 
-  const filteredByStatus = summaries.filter(summary => {
-    if (activeFilter === "current") return summary.isLive;
-    if (activeFilter === "past") return summary.isPast;
+  const sortedBroadcasts = [...mergedBroadcasts].sort((a, b) => {
+    if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+    const aDate = a.sortDateMs;
+    const bDate = b.sortDateMs;
+    if (a.isLive && b.isLive) {
+      if (aDate == null && bDate != null) return -1;
+      if (aDate != null && bDate == null) return 1;
+    }
+    if (aDate != null && bDate != null) return bDate - aDate;
+    if (aDate != null) return -1;
+    if (bDate != null) return 1;
+    return a.slug.localeCompare(b.slug);
+  });
+
+  const filteredByStatus = sortedBroadcasts.filter(item => {
+    if (activeFilter === "current") return item.isLive;
+    if (activeFilter === "past") return item.isPast;
     return true;
   });
-  const filteredSummaries = query
-    ? filteredByStatus.filter(summary =>
-        summary.name.toLowerCase().includes(query) || summary.slug.includes(query)
+  const filteredBroadcasts = query
+    ? filteredByStatus.filter(item =>
+        item.name.toLowerCase().includes(query) || item.slug.includes(query)
       )
     : filteredByStatus;
 
@@ -166,16 +309,10 @@ export default function Home({ searchParams }: HomeProps) {
         tournamentId: featuredSelection.tournamentSlug,
       }
     : null;
-
   return (
     <div className="min-h-screen bg-[#020817] text-slate-100">
       <div className="flex min-h-screen">
-        <input
-          id="sidebar-toggle"
-          type="checkbox"
-          className="peer sr-only"
-          defaultChecked
-        />
+        <SidebarToggleInput className="peer sr-only" />
         <aside className="sticky top-0 self-start flex h-[100dvh] w-16 flex-col items-center overflow-y-auto border-r border-white/10 bg-[#030d1f]/90 px-2 py-2 transition-all duration-300 ease-out [&_.nav-item]:mx-auto [&_.nav-item]:h-11 [&_.nav-item]:w-11 [&_.nav-item]:justify-center [&_.nav-item]:gap-0 [&_.nav-item]:px-0 [&_.nav-item]:py-0 [&_.nav-item]:overflow-hidden [&_.install-card]:gap-0 [&_.install-card]:p-0 [&_.install-card-inner]:gap-0 [&_.install-card-inner]:p-0 [&_.install-cta]:hidden [&_.install-mark]:h-9 [&_.install-mark]:w-9 peer-checked:w-64 peer-checked:items-stretch peer-checked:px-3 peer-checked:[&_.nav-label]:opacity-100 peer-checked:[&_.nav-label]:translate-x-0 peer-checked:[&_.nav-label]:pointer-events-auto peer-checked:[&_.nav-label]:max-w-[12rem] peer-checked:[&_.nav-item]:mx-0 peer-checked:[&_.nav-item]:h-auto peer-checked:[&_.nav-item]:w-full peer-checked:[&_.nav-item]:gap-3 peer-checked:[&_.nav-item]:px-3 peer-checked:[&_.nav-item]:py-2 peer-checked:[&_.nav-item]:justify-start peer-checked:[&_.install-card]:px-0 peer-checked:[&_.install-card]:py-0 peer-checked:[&_.install-card-inner]:gap-1 peer-checked:[&_.install-card-inner]:px-3 peer-checked:[&_.install-card-inner]:pt-0 peer-checked:[&_.install-card-inner]:pb-2 peer-checked:[&_.install-cta]:flex peer-checked:[&_.install-cta]:w-full peer-checked:[&_.install-cta]:rounded-xl peer-checked:[&_.install-cta]:px-4 peer-checked:[&_.install-cta]:py-2 peer-checked:[&_.install-mark]:h-[140px] peer-checked:[&_.install-mark]:w-[140px]">
           <div className="flex flex-1 flex-col">
             <div className="pt-2">
@@ -236,23 +373,7 @@ export default function Home({ searchParams }: HomeProps) {
 
             <div className="flex flex-1 flex-col">
               <div className="flex-1" />
-              <div className="border-t border-white/10 pt-3">
-                <Link
-                  href={buildFilterHref("top")}
-                  className={`nav-item flex items-center justify-center gap-3 rounded-2xl border px-3 py-1.5 text-sm transition ${
-                    activeFilter === "top"
-                      ? "border-emerald-400/60 bg-emerald-400/10 text-white"
-                      : "border-white/10 text-slate-300 hover:border-white/40 hover:text-white"
-                  }`}
-                  aria-current={activeFilter === "top" ? "page" : undefined}
-                  title="Top players"
-                >
-                  <Trophy className="h-5 w-5" aria-hidden />
-                  <span className="nav-label pointer-events-none max-w-0 overflow-hidden opacity-0 translate-x-2 transition-all">
-                    Top players
-                  </span>
-                </Link>
-              </div>
+              <HomeSidebarFooterNav />
               <div className="flex-1" />
             </div>
 
@@ -322,6 +443,7 @@ export default function Home({ searchParams }: HomeProps) {
                       params={Promise.resolve(featuredViewerParams)}
                       viewerDensity="compact"
                       viewerVariant="mini"
+                      liveUpdatesEnabled={false}
                     />
                   ) : (
                     <LiveViewer
@@ -329,6 +451,7 @@ export default function Home({ searchParams }: HomeProps) {
                       tournamentId={featuredViewerParams.tournamentId}
                       density="compact"
                       variant="mini"
+                      liveUpdatesEnabled={false}
                     />
                   )
                 ) : (
@@ -340,7 +463,8 @@ export default function Home({ searchParams }: HomeProps) {
             </section>
 
             <section className="flex min-h-0 flex-col overflow-hidden rounded-3xl border border-white/10 bg-slate-950/60 p-4">
-              <div className="flex flex-wrap items-center justify-end gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-white">Broadcasts</div>
                 <form method="get" action="/" className="flex items-center gap-2">
                   {activeFilter !== "all" ? (
                     <input type="hidden" name="filter" value={activeFilter} />
@@ -362,80 +486,26 @@ export default function Home({ searchParams }: HomeProps) {
                 <div className="relative">
                   <div className="lg:pr-1">
                     <div className="grid auto-rows-fr gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                      {filteredSummaries.length > 0 ? (
-                        filteredSummaries.map(summary => {
-                          const roundLabel = summary.roundLabel ?? `Round ${summary.round}`;
-                          const startsAt = summary.startsAt ? new Date(summary.startsAt) : null;
-                          const hasValidStart =
-                            startsAt && Number.isFinite(startsAt.getTime()) ? startsAt : null;
-                          const timeLabel = hasValidStart
-                            ? hasValidStart.getTime() > Date.now()
-                              ? `Starts ${formatRelativeTime(hasValidStart)}`
-                              : formatRelativeTime(hasValidStart)
-                            : null;
-                          const playerLine = summary.topPlayers?.length
-                            ? summary.topPlayers
-                                .map(player => `${player.name} ${player.rating}`)
-                                .join(", ")
-                            : null;
-
-                          const placeholderFlag = summary.placeholderFlag ?? "\uD83C\uDFC6";
-
+                      {filteredBroadcasts.length > 0 ? (
+                        filteredBroadcasts.map(item => {
                           const normalizedSlug = normalizeTournamentSlug(
-                            summary.slug,
+                            item.slug,
                             DEFAULT_TOURNAMENT_SLUG
                           );
 
                           return (
-                            <Link
-                              key={summary.slug}
-                              href={`/${encodeURIComponent(normalizedSlug)}`}
-                              className="group block h-full"
-                              aria-label={`Open ${summary.name}`}
-                            >
-                              <article className="flex h-full min-h-[176px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-[#050f22] shadow-[0_18px_40px_rgba(2,8,23,0.45)]">
-                              <div className="relative aspect-[16/6] w-full overflow-hidden bg-gradient-to-br from-slate-900 via-slate-950 to-black">
-                                {summary.heroImage ? (
-                                  <TournamentHeroImage
-                                    src={summary.heroImage}
-                                    alt={`${summary.name} banner`}
-                                    sizes="(min-width: 1280px) 320px, (min-width: 640px) 45vw, 100vw"
-                                    className="object-cover"
-                                    priority={summary.slug === DEFAULT_TOURNAMENT_SLUG}
-                                  />
-                                ) : (
-                                  <>
-                                    <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-950 to-black" />
-                                    <div className="relative flex h-full w-full items-center justify-center">
-                                      <span className="text-5xl drop-shadow-[0_12px_24px_rgba(2,6,23,0.5)]">
-                                        {placeholderFlag}
-                                      </span>
-                                    </div>
-                                  </>
-                                )}
-                              </div>
-                              <div className="flex flex-1 flex-col p-2">
-                                <div className="flex items-center justify-between gap-3 text-[11px] font-medium text-slate-400">
-                                  <span className="tracking-[0.08em] text-slate-400">
-                                    {roundLabel}
-                                  </span>
-                                  {timeLabel ? (
-                                    <span className="text-slate-500">{timeLabel}</span>
-                                  ) : null}
-                                </div>
-                                <h3 className="mt-1 text-base font-semibold text-white truncate">
-                                  <span className="transition group-hover:text-white/90">
-                                    {summary.name}
-                                  </span>
-                                </h3>
-                                {playerLine ? (
-                                  <p className="mt-1 text-[11px] text-slate-400 truncate">
-                                    {playerLine}
-                                  </p>
-                                ) : null}
-                              </div>
-                            </article>
-                            </Link>
+                            <TournamentBannerCard
+                              key={item.slug}
+                              href={`/broadcast/${encodeURIComponent(normalizedSlug)}`}
+                              name={item.name}
+                              roundLabel={item.roundLabel}
+                              timeLabel={item.timeLabel}
+                              status={item.status}
+                              heroImage={item.heroImage}
+                              logoImage={item.logoImage}
+                              flagCode={item.flagCode}
+                              priority={item.slug === DEFAULT_TOURNAMENT_SLUG}
+                            />
                           );
                         })
                       ) : (

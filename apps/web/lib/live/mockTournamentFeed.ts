@@ -2,11 +2,15 @@ import { Chess } from "chess.js";
 import type { DgtBoardState, DgtLivePayload } from "@/lib/live/dgtPayload";
 import { getWorldCupPgnForBoard } from "@/lib/demoPgns";
 import { getTournamentBoardsForRound } from "@/lib/tournamentManifest";
+import { extractLatestClockPairFromPgn } from "@/lib/chess/pgnServer";
 
 type BoardSequence = {
   moves: string[];
   fens: string[];
-  result: string | null;
+  result: DgtBoardState["result"];
+  whiteTimeMs: number | null;
+  blackTimeMs: number | null;
+  clockUpdatedAtMs: number | null;
 };
 
 type BoardProgress = {
@@ -21,11 +25,14 @@ const normalizeSlug = (slug: string) => slug.trim().toLowerCase();
 
 const buildKey = (slug: string, round: number, board: number) => `${slug}:${round}:${board}`;
 
-const parseResult = (pgn: string): string | null => {
+const parseResult = (pgn: string): DgtBoardState["result"] => {
   const match = pgn.match(/\[Result\s+"([^"]+)"\]/i);
   if (!match) return null;
   const result = match[1]?.trim();
-  return result ? result : null;
+  if (result === "1-0" || result === "0-1" || result === "1/2-1/2" || result === "½-½" || result === "*") {
+    return result;
+  }
+  return null;
 };
 
 const buildSequence = (slug: string, board: number): BoardSequence | null => {
@@ -45,13 +52,25 @@ const buildSequence = (slug: string, board: number): BoardSequence | null => {
   const fens: string[] = [];
   for (const move of moves) {
     try {
-      replay.move(move, { sloppy: true });
+      replay.move(move, { strict: false });
       fens.push(replay.fen());
     } catch {
       break;
     }
   }
-  const sequence = { moves, fens, result: parseResult(pgn) };
+  const latestFen = fens.length > 0 ? fens[fens.length - 1] : null;
+  const latestClockPair = extractLatestClockPairFromPgn(pgn, {
+    fen: latestFen,
+    moveCount: moves.length,
+  });
+  const sequence = {
+    moves,
+    fens,
+    result: parseResult(pgn),
+    whiteTimeMs: latestClockPair.whiteTimeMs,
+    blackTimeMs: latestClockPair.blackTimeMs,
+    clockUpdatedAtMs: null,
+  };
   sequenceCache.set(cacheKey, sequence);
   return sequence;
 };
@@ -94,6 +113,9 @@ export const buildMockTournamentPayload = (
       result: nextStatus === "finished" ? sequence.result : null,
       moveList,
       finalFen,
+      whiteTimeMs: sequence.whiteTimeMs,
+      blackTimeMs: sequence.blackTimeMs,
+      clockUpdatedAtMs: sequence.clockUpdatedAtMs,
       sideToMove: fenSideToMove(finalFen),
     });
   }
@@ -128,6 +150,9 @@ export const buildMockTournamentSnapshot = (
       result,
       moveList,
       finalFen,
+      whiteTimeMs: sequence?.whiteTimeMs ?? null,
+      blackTimeMs: sequence?.blackTimeMs ?? null,
+      clockUpdatedAtMs: sequence?.clockUpdatedAtMs ?? null,
       sideToMove: fenSideToMove(finalFen),
     });
   }

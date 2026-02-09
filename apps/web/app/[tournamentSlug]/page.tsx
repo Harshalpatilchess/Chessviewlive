@@ -3,7 +3,7 @@ import { normalizeTournamentSlug } from "@/lib/boardId";
 
 type TournamentRedirectPageProps = {
   params: Promise<{ tournamentSlug: string }>;
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 const buildQueryString = (searchParams?: Record<string, string | string[] | undefined>) => {
@@ -29,8 +29,9 @@ export default async function TournamentRedirectPage({
   searchParams,
 }: TournamentRedirectPageProps) {
   const resolvedParams = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const rawSlug = resolvedParams?.tournamentSlug ?? "";
   const tournamentSlug = normalizeTournamentSlug(rawSlug.trim());
-  const queryString = buildQueryString(searchParams);
+  const queryString = buildQueryString(resolvedSearchParams);
   redirect(`/broadcast/${encodeURIComponent(tournamentSlug)}${queryString}`);
 }

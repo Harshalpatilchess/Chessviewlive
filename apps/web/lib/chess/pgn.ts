@@ -79,7 +79,7 @@ export function movesToPlies(moves?: string[] | null): Ply[] {
   for (let idx = 0; idx < moves.length; idx += 1) {
     const move = moves[idx];
     try {
-      const result = replay.move(move, { sloppy: true });
+      const result = replay.move(move, { strict: false });
       if (!result) break;
       plies.push({
         san: result.san,

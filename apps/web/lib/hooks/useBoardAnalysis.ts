@@ -69,6 +69,12 @@ const parseFenStartMeta = (fen: string): { fullmoveNumber: number; turn: "w" | "
   return { fullmoveNumber, turn };
 };
 
+const normalizeFen = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const normalizeBoardIdForStorage = (rawId: string, tournamentId?: string | null): string => {
   if (typeof rawId !== "string") return "unknown";
   const trimmed = rawId.trim();
@@ -343,6 +349,15 @@ export default function useBoardAnalysis({
     const node = activeAnalysisBranch.nodesById?.[analysisCursorNodeId];
     return node?.fenAfter ?? activeAnalysisBranch.startFen;
   }, [activeAnalysisBranch, analysisCursorNodeId, analysisViewActive, officialFen]);
+  const isOnOfficialMainline = useMemo(() => {
+    const normalizedDisplayFen = normalizeFen(displayFen);
+    const normalizedOfficialFen = normalizeFen(officialFen);
+    return (
+      normalizedDisplayFen !== null &&
+      normalizedOfficialFen !== null &&
+      normalizedDisplayFen === normalizedOfficialFen
+    );
+  }, [displayFen, officialFen]);
 
   const exitAnalysisView = useCallback(() => {
     setAnalysisViewActive(false);
@@ -532,23 +547,31 @@ export default function useBoardAnalysis({
 
       const nextFen = game.fen();
 
-      if (!analysisViewActive) {
+      if (isOnOfficialMainline) {
         const nextPlyIndex = currentMoveIndex + 1;
         const officialNextFen = nextPlyIndex >= 0 && nextPlyIndex < plies.length ? plies[nextPlyIndex].fen : null;
-        if (officialNextFen && officialNextFen === nextFen) {
+        const normalizedOfficialNextFen = normalizeFen(officialNextFen);
+        const normalizedNextFen = normalizeFen(nextFen);
+        if (
+          normalizedOfficialNextFen !== null &&
+          normalizedNextFen !== null &&
+          normalizedOfficialNextFen === normalizedNextFen
+        ) {
+          exitAnalysisView();
           onOfficialNext();
           return true;
         }
       }
 
+      const analysisBranchUsable = analysisViewActive && !isOnOfficialMainline;
       const anchorPly =
-        analysisViewActive && typeof activeAnalysisAnchorPly === "number" ? activeAnalysisAnchorPly : currentMoveIndex;
+        analysisBranchUsable && typeof activeAnalysisAnchorPly === "number" ? activeAnalysisAnchorPly : currentMoveIndex;
       const anchorOfficialFen = pliesToFenAt(plies, anchorPly);
       const meta = parseFenStartMeta(anchorOfficialFen) ?? { fullmoveNumber: 1, turn: "w" as const };
       const san =
         typeof move.san === "string" && move.san.trim().length > 0 ? move.san.trim() : `${sourceSquare}-${targetSquare}`;
       const isEditingActiveBranch =
-        analysisViewActive &&
+        analysisBranchUsable &&
         typeof activeAnalysisAnchorPly === "number" &&
         activeAnalysisAnchorPly === anchorPly &&
         Boolean(activeAnalysisBranch);
@@ -646,6 +669,8 @@ export default function useBoardAnalysis({
       analysisViewActive,
       currentMoveIndex,
       displayFen,
+      exitAnalysisView,
+      isOnOfficialMainline,
       onOfficialNext,
       plies,
     ]
@@ -665,10 +690,14 @@ export default function useBoardAnalysis({
       }
 
       const branch = activeAnalysisBranch;
-      const analysisPositionActive = analysisViewActive && Boolean(branch);
+      const analysisPositionActive = analysisViewActive && Boolean(branch) && !isOnOfficialMainline;
+      const shouldClearStaleAnalysisState = analysisViewActive && isOnOfficialMainline;
 
       if (event.key === "ArrowRight" || event.key === "ArrowDown") {
         event.preventDefault();
+        if (shouldClearStaleAnalysisState) {
+          exitAnalysisView();
+        }
         if (analysisPositionActive && branch) {
           setAnalysisCursorNodeId(prevCursorId => {
             const nodesById = branch.nodesById ?? {};
@@ -689,6 +718,9 @@ export default function useBoardAnalysis({
         onOfficialNext();
       } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
         event.preventDefault();
+        if (shouldClearStaleAnalysisState) {
+          exitAnalysisView();
+        }
         if (analysisPositionActive && branch) {
           setAnalysisCursorNodeId(prevCursorId => {
             if (!prevCursorId) return prevCursorId;
@@ -705,7 +737,7 @@ export default function useBoardAnalysis({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeAnalysisBranch, analysisViewActive, onOfficialNext, onOfficialPrev]);
+  }, [activeAnalysisBranch, analysisViewActive, exitAnalysisView, isOnOfficialMainline, onOfficialNext, onOfficialPrev]);
 
   return {
     analysisViewActive,

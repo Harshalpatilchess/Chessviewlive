@@ -11,19 +11,20 @@ const requiredEnv = [
   'AWS_SECRET_ACCESS_KEY',
   'S3_BUCKET',
 ];
-for (const key of requiredEnv) {
-  if (!process.env[key]) {
-    throw new Error(`Missing required env var: ${key}`);
+const getS3Client = () => {
+  for (const key of requiredEnv) {
+    if (!process.env[key]) {
+      throw new Error(`Missing required env var: ${key}`);
+    }
   }
-}
-
-const s3 = new AWS.S3({
-  region: process.env.S3_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || process.env.S3_SECRET_ACCESS_KEY || "",
-  },
-});
+  return new AWS.S3({
+    region: process.env.S3_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID || process.env.S3_ACCESS_KEY_ID || "",
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || process.env.S3_SECRET_ACCESS_KEY || "",
+    },
+  });
+};
 
 type StampEntry = {
   stamp: string;
@@ -55,7 +56,7 @@ function parseNumberParam(raw: string | null, fallback: number, minValue: number
   return num;
 }
 
-async function listObjectsRecursive(bucket: string, prefix: string) {
+async function listObjectsRecursive(s3: AWS.S3, bucket: string, prefix: string) {
   const items: AWS.S3.Object[] = [];
   let continuationToken: string | undefined;
   do {
@@ -78,6 +79,7 @@ export async function GET(req: NextRequest) {
   if (process.env.ALLOW_DEV_CLEANUP !== "true") {
     return unauthorized(403, "disabled");
   }
+  const s3 = getS3Client();
   if (process.env.NODE_ENV === "production") {
     return unauthorized(403, "production_disabled");
   }
@@ -119,7 +121,7 @@ export async function GET(req: NextRequest) {
 
   let contents: AWS.S3.Object[];
   try {
-    contents = await listObjectsRecursive(bucket, prefix);
+    contents = await listObjectsRecursive(s3, bucket, prefix);
   } catch (err) {
     console.info("[cleanup] list_failed", err instanceof Error ? err.message : err);
     return NextResponse.json({ ok: false, error: "s3_list_failed" }, { status: 502 });

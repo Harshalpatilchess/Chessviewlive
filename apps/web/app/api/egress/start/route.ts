@@ -12,33 +12,30 @@ function reqEnv(name: string) {
   return v;
 }
 
-// LiveKit auth + URL (convert wss:// to https:// for Egress endpoint)
-const LIVEKIT_URL = reqEnv('NEXT_PUBLIC_LIVEKIT_URL').replace(/^wss?:\/\//, 'https://');
-const LIVEKIT_API_KEY = reqEnv('LIVEKIT_API_KEY');
-const LIVEKIT_API_SECRET = reqEnv('LIVEKIT_API_SECRET');
-const ADMIN_SECRET = reqEnv('ADMIN_SECRET');
-
-// S3 config
-const S3_REGION = reqEnv('S3_REGION');
-const S3_BUCKET = reqEnv('S3_BUCKET');
-const S3_PREFIX = process.env.S3_PREFIX || 'recordings';
-const S3_ACCESS_KEY_ID = reqEnv('S3_ACCESS_KEY_ID');
-const S3_SECRET_ACCESS_KEY = reqEnv('S3_SECRET_ACCESS_KEY');
-
 function utcStamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
-function buildPath(tournament: string, board: string) {
-  return `${S3_PREFIX}/${tournament}/${board}/${utcStamp()}.mp4`;
+function buildPath(prefix: string, tournament: string, board: string) {
+  return `${prefix}/${tournament}/${board}/${utcStamp()}.mp4`;
 }
 
 export async function GET(req: NextRequest) {
   try {
     const url = new URL(req.url);
     const secret = url.searchParams.get('secret') || '';
-    if (secret !== ADMIN_SECRET) {
+    const adminSecret = reqEnv('ADMIN_SECRET');
+    if (secret !== adminSecret) {
       return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
     }
+
+    const livekitUrl = reqEnv('NEXT_PUBLIC_LIVEKIT_URL').replace(/^wss?:\/\//, 'https://');
+    const livekitApiKey = reqEnv('LIVEKIT_API_KEY');
+    const livekitApiSecret = reqEnv('LIVEKIT_API_SECRET');
+    const s3Region = reqEnv('S3_REGION');
+    const s3Bucket = reqEnv('S3_BUCKET');
+    const s3Prefix = process.env.S3_PREFIX || 'recordings';
+    const s3AccessKeyId = reqEnv('S3_ACCESS_KEY_ID');
+    const s3SecretAccessKey = reqEnv('S3_SECRET_ACCESS_KEY');
 
     const room = url.searchParams.get('room') || reqEnv('NEXT_PUBLIC_LIVEKIT_ROOM');
     const tournament = url.searchParams.get('tournament') || 'misc';
@@ -46,20 +43,20 @@ export async function GET(req: NextRequest) {
 
     const outputs = {
       file: new EncodedFileOutput({
-        filepath: buildPath(tournament, board),
+        filepath: buildPath(s3Prefix, tournament, board),
         output: {
           case: 's3',
           value: new S3Upload({
-            accessKey: S3_ACCESS_KEY_ID,
-            secret: S3_SECRET_ACCESS_KEY,
-            region: S3_REGION,
-            bucket: S3_BUCKET,
+            accessKey: s3AccessKeyId,
+            secret: s3SecretAccessKey,
+            region: s3Region,
+            bucket: s3Bucket,
           }),
         },
       }),
     };
 
-    const ec = new EgressClient(LIVEKIT_URL, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+    const ec = new EgressClient(livekitUrl, livekitApiKey, livekitApiSecret);
 
     const info = await ec.startRoomCompositeEgress(room, outputs, {
       layout: 'grid',

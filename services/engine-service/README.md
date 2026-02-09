@@ -22,8 +22,11 @@ export PORT=4000
 export STOCKFISH_THREADS=2
 export STOCKFISH_HASH_MB=256
 
-# Run (ts-node or ts-node-esm; adjust to your setup)
-npx ts-node engine-service/server.ts
+# Run from monorepo root
+npm run dev:engine
+
+# Equivalent explicit workspace command
+npm --workspace services/engine-service run dev
 ```
 
 - The server logs with the prefix `[ENGINE CORE] (nnue service)` and starts listening on `PORT` (default 4000).
@@ -32,12 +35,36 @@ npx ts-node engine-service/server.ts
 
 ## Relationship to the Next.js app
 - Set `CLOUD_ENGINE_URL=http://localhost:4000/engine/eval` in the Next.js env to proxy cloud evaluations to this service.
+- The web client calls `/api/engine/eval`; the Next.js route resolves `CLOUD_ENGINE_URL` and, in development, falls back to `http://localhost:4000/engine/eval` when unset.
 - Request/response shapes are identical to the app’s `CloudEngineRequest` / `CloudEngineResponse`; this file can be copy-pasted into a standalone repo if we split the service later.
+
+## Verify service is running
+```bash
+# Confirm listener is up
+lsof -iTCP:4000 -sTCP:LISTEN -n -P
+
+# Health check
+curl -sS http://localhost:4000/healthz
+
+# Eval smoke test
+curl -sS -X POST http://localhost:4000/engine/eval \
+  -H 'Content-Type: application/json' \
+  --data '{"fen":"startpos","multiPv":1,"requestId":"smoke-1","searchMode":"time","movetimeMs":200}'
+```
+
+## Env var names
+- `PORT`
+- `STOCKFISH_PATH`
+- `STOCKFISH_THREADS`
+- `STOCKFISH_HASH_MB`
+- `SELF_TEST_DEPTH`
+- `SELF_TEST_MOVETIME_MS`
+- `SELF_TEST_TIMEOUT_MS`
 
 ## Setup
 1) Install dependencies
 ```bash
-cd engine-service
+cd services/engine-service
 npm install
 ```
 

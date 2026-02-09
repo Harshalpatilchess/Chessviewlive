@@ -12,6 +12,7 @@ type UseTournamentLiveFeedParams = {
   tournamentSlug?: string | null;
   round?: number | null;
   intervalMs?: number;
+  enabled?: boolean;
 };
 
 const buildMockUpdates = (
@@ -32,6 +33,7 @@ const buildMockUpdates = (
       result: board.result ?? null,
       whiteTimeMs: board.whiteTimeMs ?? null,
       blackTimeMs: board.blackTimeMs ?? null,
+      clockUpdatedAtMs: board.clockUpdatedAtMs ?? null,
       sideToMove: board.sideToMove ?? null,
       previewFen: board.fen ?? board.finalFen ?? null,
       finalFen: board.finalFen ?? null,
@@ -53,21 +55,26 @@ const resolveLiveEndpoint = (slug: string) => {
 export default function useTournamentLiveFeed({
   tournamentSlug,
   round,
-  intervalMs = 5000,
+  intervalMs = 20000,
+  enabled = true,
 }: UseTournamentLiveFeedParams): number {
   const [version, setVersion] = useState(0);
   const timerRef = useRef<number | null>(null);
+  const timerKeyRef = useRef<string | null>(null);
   const fetchInFlightRef = useRef(false);
   const slugRef = useRef<string | null>(tournamentSlug ?? null);
   const roundRef = useRef<number | null>(round ?? null);
+  const enabledRef = useRef(enabled);
 
   useEffect(() => {
     slugRef.current = tournamentSlug ?? null;
     roundRef.current = typeof round === "number" && Number.isFinite(round) ? round : null;
-  }, [round, tournamentSlug]);
+    enabledRef.current = enabled;
+  }, [enabled, round, tournamentSlug]);
 
   useEffect(() => {
     const fetchUpdates = async () => {
+      if (!enabledRef.current) return;
       const slug = slugRef.current;
       const activeRound = roundRef.current;
       if (!slug || activeRound == null) return;
@@ -99,17 +106,22 @@ export default function useTournamentLiveFeed({
 
     const slug = slugRef.current;
     const activeRound = roundRef.current;
-    if (!slug || activeRound == null) return;
+    if (!enabled || !slug || activeRound == null) return;
+    const safeIntervalMs = Math.min(30000, Math.max(15000, intervalMs));
+    const timerKey = `${slug}:${activeRound}:${safeIntervalMs}`;
+    if (timerRef.current && timerKeyRef.current === timerKey) return;
+    timerKeyRef.current = timerKey;
     fetchUpdates();
-    timerRef.current = window.setInterval(fetchUpdates, intervalMs);
+    timerRef.current = window.setInterval(fetchUpdates, safeIntervalMs);
 
     return () => {
       if (timerRef.current) {
         window.clearInterval(timerRef.current);
         timerRef.current = null;
       }
+      timerKeyRef.current = null;
     };
-  }, [intervalMs, round, tournamentSlug]);
+  }, [enabled, intervalMs, round, tournamentSlug]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
