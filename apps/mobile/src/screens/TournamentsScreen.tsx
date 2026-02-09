@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, FlatList, Image, TouchableOpacity, TextInput, LayoutAnimation, Platform, UIManager, RefreshControl } from 'react-native';
+import { StyleSheet, Text, View, FlatList, SectionList, Image, TouchableOpacity, TextInput, LayoutAnimation, Platform, UIManager, RefreshControl, ScrollView } from 'react-native';
 import { getTournaments, type Tournament } from '@chessview/core';
 import { colors } from '../theme/colors';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -16,6 +16,7 @@ import Sidebar from '../components/Sidebar';
 import { Ionicons } from '@expo/vector-icons';
 import { broadcastTheme } from '../theme/broadcastTheme';
 import { previewMemory } from '../cache/previewMemory';
+import { fetchLiveBroadcasts, saveLiveCache, loadLiveCache, type DiscoveryItem } from '../services/discoveryService';
 
 if (Platform.OS === 'android') {
     if (UIManager.setLayoutAnimationEnabledExperimental) {
@@ -32,6 +33,9 @@ const PROBE_TTL = 60000; // 60s
 const CACHE_TTL = 180000; // 3 mins (Strict TTL for persistence)
 const PROBE_DEBOUNCE = 1000;
 const PROBE_HISTORY: Record<string, number> = {}; // lastProbeTime per slug
+
+// KEY_EXTRACTOR WARNING GUARD (prevent spam)
+const KEY_EXTRACTOR_WARNED = new Set<number>();
 
 const LIVE_OVERRIDES_KEY = 'home_live_overrides_v1';
 
@@ -92,12 +96,17 @@ export default function TournamentsScreen({ navigation, route }: Props) {
     const filter = route.params?.filter || 'ALL';
     const [sidebarVisible, setSidebarVisible] = useState(false);
     const allTournaments = getTournaments();
+    const sectionListRef = useRef<SectionList>(null);
 
     // Local Search State
     const [searchQuery, setSearchQuery] = useState('');
     const [isSearchMode, setIsSearchMode] = useState(false);
     const searchInputRef = useRef<TextInput>(null);
     const [refreshing, setRefreshing] = useState(false);
+
+    // Live Discovery State
+    const [liveDiscoveryItems, setLiveDiscoveryItems] = useState<DiscoveryItem[]>([]);
+    const discoveryIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
     // Live Probe State Override
     const [liveOverrides, setLiveOverrides] = useState<LiveOverridesMap>({});
@@ -298,6 +307,56 @@ export default function TournamentsScreen({ navigation, route }: Props) {
 
     }, []);
 
+    // [LIVE_DISCOVERY] Fetch and poll live broadcasts
+    const fetchDiscovery = useCallback(async (forceRefresh: boolean = false) => {
+        try {
+            const items = await fetchLiveBroadcasts(forceRefresh);
+            if (items.length > 0) {
+                setLiveDiscoveryItems(items);
+                await saveLiveCache(items);
+            } else {
+                // On error or empty, try to load from cache (unless force refresh)
+                if (!forceRefresh) {
+                    const cached = await loadLiveCache();
+                    if (cached.length > 0) {
+                        setLiveDiscoveryItems(cached);
+                    }
+                }
+            }
+        } catch (error) {
+            if (__DEV__) console.warn('[Discovery] Fetch failed', error);
+            // Try cache on error (unless force refresh)
+            if (!forceRefresh) {
+                const cached = await loadLiveCache();
+                if (cached.length > 0) {
+                    setLiveDiscoveryItems(cached);
+                }
+            }
+        }
+    }, []);
+
+    // Initial fetch and setup polling
+    useEffect(() => {
+        if (isFocused) {
+            // Immediate fetch
+            fetchDiscovery();
+
+            // Setup 60s polling
+            if (!discoveryIntervalRef.current) {
+                discoveryIntervalRef.current = setInterval(() => {
+                    fetchDiscovery();
+                }, 60000);
+            }
+        }
+
+        return () => {
+            if (discoveryIntervalRef.current) {
+                clearInterval(discoveryIntervalRef.current);
+                discoveryIntervalRef.current = null;
+            }
+        };
+    }, [isFocused, fetchDiscovery]);
+
 
     // Viewability Config for Probe (Scrolling)
     const viewabilityConfig = useRef({
@@ -320,13 +379,14 @@ export default function TournamentsScreen({ navigation, route }: Props) {
         // Add minimal delay for UX so spinner is visible
         const minWait = new Promise(resolve => setTimeout(resolve, 500));
 
-        // Force re-probe Tata Steel
+        // Force re-probe Tata Steel and fetch fresh discovery data (bypass cache)
         const p1 = prefetchTournament(TATA_STEEL_2026_SLUG); // Keep prefetch for detailed data
         const p2 = executeProbe(TATA_STEEL_2026_SLUG); // Re-run probe logic
+        const p3 = fetchDiscovery(true); // Force refresh discovery data
 
-        await Promise.all([p1, p2, minWait]);
+        await Promise.all([p1, p2, p3, minWait]);
         setRefreshing(false);
-    }, [executeProbe]);
+    }, [executeProbe, fetchDiscovery]);
 
     // Auto-focus logic
     useEffect(() => {
@@ -360,6 +420,157 @@ export default function TournamentsScreen({ navigation, route }: Props) {
 
         return result;
     }, [allTournaments, filter, searchQuery]);
+
+    // Section-based data structure
+    type TournamentItem = {
+        tournament: Tournament;
+        discoveryItem?: DiscoveryItem;
+    };
+
+    type TournamentSection = {
+        title: string;
+        data: TournamentItem[];
+    };
+
+    const sections = useMemo((): TournamentSection[] => {
+        const liveSlugs = new Set(
+            liveDiscoveryItems
+                .filter(item => item?.tournament?.slug)
+                .map(item => item.tournament.slug)
+        );
+
+        // Normalize search query for filtering
+        const normalizedQuery = searchQuery.trim().toLowerCase().replace(/\s+/g, ' ');
+        const hasSearch = normalizedQuery.length > 0;
+
+        // Helper to check if tournament matches search
+        const matchesSearch = (name: string): boolean => {
+            if (!hasSearch) return true;
+            const normalizedName = name.toLowerCase().replace(/\s+/g, ' ');
+            return normalizedName.includes(normalizedQuery);
+        };
+
+        const liveItems: TournamentItem[] = [];
+        const ongoingItems: TournamentItem[] = [];
+        const completedItems: TournamentItem[] = [];
+        const upcomingItems: TournamentItem[] = [];
+
+        // Process discovery items into Live section
+        liveDiscoveryItems.forEach(discoveryItem => {
+            if (!discoveryItem?.tournament?.slug || !discoveryItem?.tournament?.name) {
+                if (__DEV__) console.warn('[SECTIONS] Skipping invalid discovery item:', discoveryItem);
+                return;
+            }
+
+            // Apply search filter to Live items
+            if (!matchesSearch(discoveryItem.tournament.name)) return;
+
+            liveItems.push({
+                tournament: {
+                    id: discoveryItem.tournament.slug,
+                    slug: discoveryItem.tournament.slug,
+                    name: discoveryItem.tournament.name,
+                    status: 'ONGOING',
+                    rounds: parseInt(discoveryItem.current.round.id, 10) || 1,
+                } as Tournament,
+                discoveryItem,
+            });
+        });
+
+        // Process curated tournaments into Ongoing/Completed/Upcoming sections
+        filteredTournaments.forEach(tournament => {
+            if (!tournament?.slug) {
+                if (__DEV__) console.warn('[SECTIONS] Skipping invalid tournament:', tournament);
+                return;
+            }
+
+            // Skip if already in Live section (dedupe by slug)
+            if (liveSlugs.has(tournament.slug)) return;
+
+            // Apply search filter to curated tournaments
+            if (!matchesSearch(tournament.name)) return;
+
+            const cachedGames = getCachedGames(tournament.slug);
+            const override = liveOverrides[tournament.slug];
+            const isChecking = pendingProbes.has(tournament.slug) && !override;
+
+            const { primaryText } = computeHomeRoundAndStatus(
+                tournament,
+                cachedGames,
+                now,
+                override,
+                isChecking
+            );
+
+            // Categorize based on status
+            if (tournament.status === 'FINISHED' || primaryText === 'Completed') {
+                completedItems.push({ tournament });
+            } else if (tournament.status === 'UPCOMING' || primaryText === 'Upcoming') {
+                upcomingItems.push({ tournament });
+            } else {
+                // ONGOING or Live (but not in discovery)
+                ongoingItems.push({ tournament });
+            }
+        });
+
+        // Build sections array with robust filtering
+        const allSections: TournamentSection[] = [
+            {
+                title: 'Live',
+                data: liveItems.filter(item =>
+                    item &&
+                    item.tournament &&
+                    item.tournament.slug
+                )
+            },
+            {
+                title: 'Ongoing',
+                data: ongoingItems.filter(item =>
+                    item &&
+                    item.tournament &&
+                    item.tournament.slug
+                )
+            },
+            {
+                title: 'Completed',
+                data: completedItems.filter(item =>
+                    item &&
+                    item.tournament &&
+                    item.tournament.slug
+                )
+            },
+            {
+                title: 'Upcoming',
+                data: upcomingItems.filter(item =>
+                    item &&
+                    item.tournament &&
+                    item.tournament.slug
+                )
+            },
+        ];
+
+        return allSections;
+    }, [liveDiscoveryItems, filteredTournaments, now, liveOverrides, pendingProbes, searchQuery]);
+
+    // Section index mapping for jump chips
+    const sectionIndexMap = useMemo(() => {
+        const map: Record<string, number> = {};
+        sections.forEach((section, index) => {
+            map[section.title] = index;
+        });
+        return map;
+    }, [sections]);
+
+    const scrollToSection = useCallback((sectionTitle: string) => {
+        const sectionIndex = sectionIndexMap[sectionTitle];
+        if (sectionIndex !== undefined && sections[sectionIndex]?.data.length > 0) {
+            sectionListRef.current?.scrollToLocation({
+                sectionIndex,
+                itemIndex: 0,
+                animated: true,
+            });
+        }
+    }, [sectionIndexMap, sections]);
 
     // Section Title
     let sectionTitle = 'Tournaments';
@@ -424,6 +635,9 @@ export default function TournamentsScreen({ navigation, route }: Props) {
         });
     };
 
+    // NOTE: If you see a refresh button or "three dots" menu in dev mode,
+    // these are from the Expo Go / dev client overlay and will NOT appear in production builds.
+    // Our app UI only has: hamburger menu, search, and pull-to-refresh gesture.
     return (
         <View style={styles.container}>
             <StatusBar style="light" />
@@ -444,9 +658,9 @@ export default function TournamentsScreen({ navigation, route }: Props) {
                 </View>
             </View>
 
-            {/* Section Label or Search Bar */}
-            <View style={styles.sectionHeader}>
-                {isSearchMode ? (
+            {/* Unified Chips + Search Toolbar */}
+            {isSearchMode ? (
+                <View style={styles.searchBarRow}>
                     <View style={styles.searchInputContainer}>
                         <Ionicons name="search" size={18} color={broadcastTheme.colors.sky400} />
                         <TextInput
@@ -468,50 +682,130 @@ export default function TournamentsScreen({ navigation, route }: Props) {
                             <Ionicons name="close-circle" size={18} color={broadcastTheme.colors.slate400} />
                         </TouchableOpacity>
                     </View>
-                ) : (
-                    <View style={[styles.sectionHeaderRow, { justifyContent: 'flex-end' }]}>
-                        <TouchableOpacity onPress={() => setIsSearchMode(true)} style={styles.searchIconButton}>
-                            <Ionicons name="search" size={20} color={colors.textSecondary} />
-                        </TouchableOpacity>
-                    </View>
-                )}
-            </View>
+                </View>
+            ) : (
+                <View style={styles.chipToolbarRow}>
+                    <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.chipsScrollContent}
+                        style={styles.chipsScroll}
+                    >
+                        {['Live', 'Ongoing', 'Completed', 'Upcoming'].map((sectionTitle) => {
+                            const sectionIndex = sectionIndexMap[sectionTitle];
+                            const hasData = sectionIndex !== undefined && sections[sectionIndex]?.data.length > 0;
+                            return (
+                                <TouchableOpacity
+                                    key={sectionTitle}
+                                    style={[
+                                        styles.chip,
+                                        !hasData && styles.chipDisabled,
+                                    ]}
+                                    onPress={() => hasData && scrollToSection(sectionTitle)}
+                                    disabled={!hasData}
+                                    activeOpacity={0.7}
+                                >
+                                    <Text style={[
+                                        styles.chipText,
+                                        !hasData && styles.chipTextDisabled,
+                                    ]}>
+                                        {sectionTitle}
+                                    </Text>
+                                </TouchableOpacity>
+                            );
+                        })}
+                    </ScrollView>
+                    <TouchableOpacity onPress={() => setIsSearchMode(true)} style={styles.searchIconButton}>
+                        <Ionicons name="search" size={20} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                </View>
+            )}
 
-            {/* Tournament List */}
-            {filteredTournaments.length === 0 ? (
+            {/* Section-based List: Live / Ongoing / Completed / Upcoming */}
+            {sections.length === 0 ? (
                 <View style={styles.emptyState}>
                     <Text style={styles.emptyStateText}>
                         {searchQuery ? 'No matching tournaments.' : 'No tournaments found.'}
                     </Text>
                 </View>
             ) : (
-                <FlatList
+                <SectionList
+                    ref={sectionListRef}
                     style={styles.scrollView}
                     contentContainerStyle={styles.scrollContent}
-                    data={filteredTournaments}
-                    keyExtractor={item => item.id}
+                    sections={sections}
+                    keyExtractor={(item: TournamentItem, index: number) => {
+                        // Defensive keyExtractor: never assume item.tournament.id exists
+                        // Prefer stable keys in order: slug > id > fallback
+                        if (!item?.tournament) {
+                            if (__DEV__ && !KEY_EXTRACTOR_WARNED.has(index)) {
+                                KEY_EXTRACTOR_WARNED.add(index);
+                                console.warn(`[KEY_EXTRACTOR] Invalid item at index ${index}`);
+                            }
+                            return `fallback-${index}`;
+                        }
+
+                        const t = item.tournament;
+
+                        // For discovery items (Live section)
+                        if (item.discoveryItem) {
+                            const slug = t.slug;
+                            const roundId = item.discoveryItem.current?.round?.id || 'unknown';
+                            return slug ? `live-${slug}-${roundId}` : `live-fallback-${index}`;
+                        }
+
+                        // For curated tournaments: prefer slug > id > index
+                        const key = t.slug || t.id;
+                        return key ? `tournament-${key}` : `fallback-${index}`;
+                    }}
                     refreshControl={
                         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.foreground} />
                     }
-                    extraData={{ liveOverrides, now, refreshing, filteredTournaments, pendingProbes }} // Added pendingProbes
+                    extraData={{ liveOverrides, now, refreshing }}
                     onViewableItemsChanged={onViewableItemsChanged}
                     viewabilityConfig={viewabilityConfig}
-                    renderItem={({ item }) => (
-                        <TournamentCard
-                            tournament={item}
-                            onPress={() => handleTournamentPress(item)}
-                            now={now}
-                            liveOverride={liveOverrides[item.slug]}
-                            isChecking={pendingProbes.has(item.slug) && !liveOverrides[item.slug]} // Only show checking if NO override exists
-                        />
-                    )}
+                    renderSectionHeader={({ section: { data } }) => {
+                        if (data.length === 0) return null;
+                        return <View style={styles.sectionSpacer} />;
+                    }}
+                    renderItem={({ item }) => {
+                        const { tournament, discoveryItem } = item;
+
+                        return (
+                            <TournamentCard
+                                tournament={tournament}
+                                onPress={() => {
+                                    if (discoveryItem) {
+                                        const roundId = parseInt(discoveryItem.current.round.id, 10);
+                                        navigation.navigate('TournamentBoards', {
+                                            tournamentId: tournament.slug,
+                                            tournamentSlug: tournament.slug,
+                                            tournamentName: tournament.name,
+                                            initialRound: isNaN(roundId) ? 1 : roundId,
+                                            snapshot: {
+                                                name: tournament.name,
+                                                status: 'ONGOING',
+                                                rounds: roundId || 1,
+                                            },
+                                        });
+                                    } else {
+                                        handleTournamentPress(tournament);
+                                    }
+                                }}
+                                now={now}
+                                discoveryItem={discoveryItem}
+                                liveOverride={liveOverrides[tournament.slug]}
+                                isChecking={pendingProbes.has(tournament.slug) && !liveOverrides[tournament.slug]}
+                            />
+                        );
+                    }}
                 />
             )}
         </View>
     );
 }
 
-function TournamentCard({ tournament, onPress, now, liveOverride, isChecking }: { tournament: Tournament; onPress: () => void; now: number; liveOverride?: LiveOverride; isChecking?: boolean }) {
+function TournamentCard({ tournament, onPress, now, liveOverride, isChecking, discoveryItem }: { tournament: Tournament; onPress: () => void; now: number; liveOverride?: LiveOverride; isChecking?: boolean; discoveryItem?: DiscoveryItem }) {
     const [expanded, setExpanded] = useState(false);
 
     // Forces re-render if memory cache updates
@@ -522,18 +816,59 @@ function TournamentCard({ tournament, onPress, now, liveOverride, isChecking }: 
         setExpanded(!expanded);
     };
 
-    const { primaryText, secondaryText, statusColor, debugSource, preferredOpenRoundNumber } = useMemo(() => {
-        return computeHomeRoundAndStatus(tournament, cachedGames, now, liveOverride, isChecking);
-    }, [tournament, cachedGames, now, liveOverride, isChecking]);
+    // Unified status computing: discovery items or curated tournaments
+    const statusInfo = useMemo(() => {
+        if (discoveryItem) {
+            // Discovery item: map to unified status format
+            const isLive = discoveryItem.current.kind === 'live';
+            const statusColor = isLive ? '#ef4444' : '#f97316'; // Red for Live, Orange for Ongoing
+            const statusText = isLive ? 'Live' : 'Ongoing';
+            const roundName = discoveryItem.current.round.name || 'Round';
 
-    // One-time log per tournament render (if Tata) - SILENCED for loop spam prevention
-    // useEffect(() => {
-    //     if (__DEV__ && (tournament.slug.includes('tata') || tournament.slug.includes('steel'))) {
-    //         const age = liveOverride ? Math.floor((Date.now() - liveOverride.lastUpdated) / 1000) : -1;
-    //         const stateStr = liveOverride ? (liveOverride.isLive === true ? 'TRUE' : liveOverride.isLive === false ? 'FALSE' : 'NULL') : 'NONE';
-    //         console.log(`HOME_ROW [${tournament.slug}] label="${primaryText} ${secondaryText}" live=${stateStr} prefRound=${preferredOpenRoundNumber} debug=${debugSource}`);
-    //     }
-    // }, [tournament.slug, primaryText, secondaryText, liveOverride, preferredOpenRoundNumber, debugSource]);
+            return {
+                primaryText: statusText,
+                secondaryText: ` • ${roundName}`,
+                statusColor,
+                badgeText: statusText,
+                badgeColor: statusColor,
+            };
+        } else {
+            // Curated tournament: use existing logic
+            const { primaryText, secondaryText, statusColor } = computeHomeRoundAndStatus(
+                tournament,
+                cachedGames,
+                now,
+                liveOverride,
+                isChecking
+            );
+
+            // Determine badge based on status
+            let badgeText: string | null = null;
+            let badgeColor: string | null = null;
+
+            if (primaryText === 'Live') {
+                badgeText = 'Live';
+                badgeColor = '#ef4444'; // Red
+            } else if (primaryText === 'Ongoing') {
+                badgeText = 'Ongoing';
+                badgeColor = '#f97316'; // Orange
+            } else if (primaryText === 'Completed') {
+                badgeText = 'Completed';
+                badgeColor = '#10b981'; // Green
+            } else if (primaryText === 'Upcoming') {
+                badgeText = 'Upcoming';
+                badgeColor = '#6366f1'; // Indigo
+            }
+
+            return {
+                primaryText,
+                secondaryText,
+                statusColor,
+                badgeText,
+                badgeColor,
+            };
+        }
+    }, [discoveryItem, tournament, cachedGames, now, liveOverride, isChecking]);
 
     const displayName = tournament.name.replace(/tournament/yi, '').replace(/\s+/g, ' ').trim();
 
@@ -549,26 +884,27 @@ function TournamentCard({ tournament, onPress, now, liveOverride, isChecking }: 
                     <Text style={styles.itemTitle} numberOfLines={1} ellipsizeMode="tail">
                         {displayName}
                     </Text>
-                    <Text style={styles.itemSubtitle}>
-                        <Text style={{ color: statusColor, fontWeight: '700' }}>{primaryText}</Text>
-                        <Text style={{ color: colors.foreground }}>{secondaryText}</Text>
+                    <Text style={styles.itemSubtitle} numberOfLines={1}>
+                        <Text style={{ color: statusInfo.statusColor, fontWeight: '700' }}>{statusInfo.primaryText}</Text>
+                        <Text style={{ color: colors.foreground }}>{statusInfo.secondaryText}</Text>
                     </Text>
                 </TouchableOpacity>
 
-                {/* Chevron Trigger */}
-                <TouchableOpacity
-                    style={styles.chevronButton}
-                    onPress={toggleExpand}
-                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                    <Ionicons
-                        name={expanded ? "chevron-up" : "chevron-down"}
-                        size={20}
-                        color={colors.textSecondary}
-                    />
-                </TouchableOpacity>
+                {/* Chevron Trigger - only for non-discovery items */}
+                {!discoveryItem && (
+                    <TouchableOpacity
+                        style={styles.chevronButton}
+                        onPress={toggleExpand}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                        <Ionicons
+                            name={expanded ? "chevron-up" : "chevron-down"}
+                            size={20}
+                            color={colors.textSecondary}
+                        />
+                    </TouchableOpacity>
+                )}
             </View>
-
 
             {/* Expanded Content */}
             {expanded && (
@@ -577,13 +913,6 @@ function TournamentCard({ tournament, onPress, now, liveOverride, isChecking }: 
                         <Text style={styles.expandedLabel}>Status:</Text>
                         <Text style={styles.expandedValue}>{tournament.status}</Text>
                     </View>
-                    {/* Placeholder for Avg Elo if it becomes available */}
-                    {/*
-                    <View style={styles.expandedRow}>
-                        <Text style={styles.expandedLabel}>Avg Elo:</Text>
-                        <Text style={styles.expandedValue}>####</Text>
-                    </View>
-                    */}
                 </View>
             )}
         </View>
@@ -596,9 +925,9 @@ const styles = StyleSheet.create({
         backgroundColor: colors.background,
     },
     header: {
-        paddingTop: 60,
-        paddingBottom: 10,
-        paddingHorizontal: 16, // Increased horizontal padding
+        paddingTop: 42,
+        paddingBottom: 6,
+        paddingHorizontal: 16,
         backgroundColor: colors.background,
         borderBottomWidth: 1,
         borderBottomColor: colors.border,
@@ -613,8 +942,8 @@ const styles = StyleSheet.create({
         marginRight: 0,
     },
     headerLogo: {
-        width: 140, // Increased by ~55% from 90
-        height: 140,
+        width: 110,
+        height: 110,
         resizeMode: 'contain',
     },
     title: {
@@ -642,7 +971,8 @@ const styles = StyleSheet.create({
         textTransform: 'uppercase',
     },
     searchIconButton: {
-        padding: 4,
+        padding: 8,
+        marginLeft: 4,
     },
     searchInputContainer: {
         flexDirection: 'row',
@@ -729,5 +1059,138 @@ const styles = StyleSheet.create({
     emptyStateText: {
         color: colors.textSecondary,
         fontSize: 16,
+    },
+    // Live Discovery Styles
+    liveSection: {
+        paddingHorizontal: 16,
+        paddingTop: 8,
+        paddingBottom: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+    },
+    liveSectionTitle: {
+        fontSize: 13,
+        fontWeight: '700' as '700',
+        color: colors.textSecondary,
+        letterSpacing: 1,
+        textTransform: 'uppercase',
+        marginBottom: 8,
+    },
+    liveCard: {
+        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: 'rgba(239, 68, 68, 0.3)',
+        marginBottom: 8,
+        overflow: 'hidden',
+    },
+    liveCardContent: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        gap: 12,
+    },
+    liveCardText: {
+        flex: 1,
+        gap: 2,
+    },
+    liveCardTitle: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: colors.foreground,
+    },
+    liveCardRound: {
+        fontSize: 13,
+        color: colors.textSecondary,
+    },
+    liveBadge: {
+        backgroundColor: '#ef4444',
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    liveBadgeText: {
+        fontSize: 11,
+        fontWeight: '700' as '700',
+        color: '#ffffff',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    sectionHeaderInline: {
+        paddingHorizontal: 16,
+        paddingTop: 16,
+        paddingBottom: 8,
+    },
+    statusBadge: {
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    statusBadgeText: {
+        fontSize: 11,
+        fontWeight: '700' as '700',
+        color: '#ffffff',
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+    },
+    chipRow: {
+        flexDirection: 'row',
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        gap: 7,
+        backgroundColor: colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+    },
+    chipToolbarRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 8,
+        paddingRight: 12,
+        backgroundColor: colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+    },
+    chipsScroll: {
+        flex: 1,
+    },
+    chipsScrollContent: {
+        paddingHorizontal: 12,
+        gap: 7,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    searchBarRow: {
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        backgroundColor: colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.border,
+    },
+    chip: {
+        paddingHorizontal: 11,
+        paddingVertical: 5,
+        borderRadius: 14,
+        backgroundColor: 'rgba(99, 102, 241, 0.15)',
+        borderWidth: 1,
+        borderColor: 'rgba(99, 102, 241, 0.3)',
+    },
+    chipDisabled: {
+        backgroundColor: 'rgba(255, 255, 255, 0.02)',
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+    },
+    chipText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#a5b4fc',
+    },
+    chipTextDisabled: {
+        color: colors.textSecondary,
+        opacity: 0.4,
+    },
+    sectionSpacer: {
+        height: 12,
     },
 });

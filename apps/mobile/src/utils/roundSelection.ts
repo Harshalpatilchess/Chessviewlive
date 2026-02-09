@@ -343,14 +343,6 @@ export function computeTournamentState(
         startsSoon = nextRoundNum > 0 && diffMin <= 60 && diffMin > 0;
     }
 
-    // [HOME_CALC2] Log
-    if (__DEV__ && (tournament.slug.includes('tata') || tournament.slug.includes('steel'))) {
-        const pref = isLive ? (probeLiveRound ?? latestFinished + 1) : latestFinished;
-        console.log(`[HOME_CALC2] now=${now} latest=${latestFinished} next=${nextRoundNum} hrsToNext=${(diffMs / 3600000).toFixed(2)} pref=${pref}`);
-        if (diffMs > 0) {
-            console.log(`[HOME_FORMAT_DEBUG] diffMs=${diffMs} output="${formatDuration(diffMs)}"`);
-        }
-    }
 
     // --- 2. Construct Label & Navigation Data ---
 
@@ -370,10 +362,6 @@ export function computeTournamentState(
     if (isLive) {
         const r = probeLiveRound ?? (cachedLive ? getDefaultRound(cachedGames, total, now) : latestFinished + 1);
 
-        if (__DEV__ && (tournament.slug.includes('tata') || tournament.slug.includes('steel'))) {
-            console.log(`[HOME_CALC] ${tournament.slug} | liveOverride=${!!liveOverride} liveRound=${probeLiveRound} | roundsLen=${tournament.rounds} | now=${now} | OUT: liveRound=${r} latest=${latestFinished} next=${nextRoundNum} minToNext=${diffMin} pref=${r} label="LIVE"`);
-        }
-
         return {
             primaryText: 'LIVE',
             secondaryText: ` • Round ${r}`,
@@ -386,9 +374,6 @@ export function computeTournamentState(
 
     // CASE 2: STARTS SOON (< 60m)
     if (startsSoon) {
-        if (__DEV__ && (tournament.slug.includes('tata') || tournament.slug.includes('steel'))) {
-            console.log(`[HOME_CALC] ${tournament.slug} | liveOverride=${!!liveOverride} liveRound=${probeLiveRound} | roundsLen=${tournament.rounds} | now=${now} | OUT: liveRound=null latest=${latestFinished} next=${nextRoundNum} minToNext=${diffMin} pref=${latestFinished} label="In X min"`);
-        }
 
         return {
             primaryText: `In ${diffMin} min`,
@@ -404,10 +389,6 @@ export function computeTournamentState(
     if (tournament.status === 'ONGOING' || probeActive) {
         if (nextRoundNum > 0 && diffMs > 0) {
 
-            if (__DEV__ && (tournament.slug.includes('tata') || tournament.slug.includes('steel'))) {
-                console.log(`[HOME_CALC] ${tournament.slug} | liveOverride=${!!liveOverride} liveRound=${probeLiveRound} | roundsLen=${tournament.rounds} | now=${now} | OUT: liveRound=null latest=${latestFinished} next=${nextRoundNum} minToNext=${diffMin} pref=${latestFinished} label="Ongoing Scheduled"`);
-            }
-
             // "Ongoing • RD{nextRound} in {X}h {Y}m" (orange)
             return {
                 primaryText: 'Ongoing',
@@ -417,10 +398,6 @@ export function computeTournamentState(
                 selectedRound: nextRoundNum,
                 preferredOpenRoundNumber: latestFinished
             };
-        }
-
-        if (__DEV__ && (tournament.slug.includes('tata') || tournament.slug.includes('steel'))) {
-            console.log(`[HOME_CALC] ${tournament.slug} | liveOverride=${!!liveOverride} liveRound=${probeLiveRound} | roundsLen=${tournament.rounds} | now=${now} | OUT: liveRound=null latest=${latestFinished} next=${nextRoundNum} minToNext=${diffMin} pref=${latestFinished} label="Ongoing Generic"`);
         }
 
         // Generic Ongoing (No schedule info)
