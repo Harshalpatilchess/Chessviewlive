@@ -183,6 +183,7 @@ __export(index_exports, {
   BOARD_THEME: () => BOARD_THEME,
   CORE_VERSION: () => CORE_VERSION,
   coreHello: () => coreHello,
+  formatPlayerDisplay: () => formatPlayerDisplay,
   getLiveTournaments: () => getLiveTournaments,
   getTournamentGames: () => getTournamentGames,
   getTournaments: () => getTournaments
@@ -192,9 +193,9 @@ module.exports = __toCommonJS(index_exports);
 // src/tournaments.ts
 var REAL_TOURNAMENTS = [
   {
-    id: "tata-steel-2026",
-    slug: "tata-steel-2026",
-    name: "Tata Steel Chess Tournament 2026",
+    id: "tata-steel-masters-2026",
+    slug: "tata-steel-masters-2026",
+    name: "Tata Steel Chess 2026 Masters",
     startDate: "2026-01-16",
     endDate: "2026-02-01",
     rounds: 13,
@@ -301,6 +302,60 @@ var BOARD_THEME = {
   blackPiece: "#444444"
 };
 
+// src/player-display.ts
+var toCleanString = (value) => {
+  if (typeof value !== "string") return "";
+  return value.trim();
+};
+var toFlagEmoji = (iso2) => {
+  if (!/^[A-Z]{2}$/.test(iso2)) return null;
+  const base = 127462;
+  const chars = Array.from(iso2).map((char) => base + (char.charCodeAt(0) - 65));
+  return String.fromCodePoint(...chars);
+};
+var resolveFlag = (player) => {
+  if (!player) return null;
+  const rawFlag = toCleanString(player.flag) || toCleanString(player.federation) || toCleanString(player.country);
+  if (!rawFlag) return null;
+  const upper = rawFlag.toUpperCase();
+  const emoji = toFlagEmoji(upper);
+  return emoji ?? upper;
+};
+var resolveTitle = (player) => {
+  if (!player) return null;
+  const title = toCleanString(player.title);
+  return title ? title.toUpperCase() : null;
+};
+var resolveName = (player) => {
+  if (!player) return "Unknown";
+  const name = toCleanString(player.name) || toCleanString(player.fullName) || toCleanString(player.username);
+  return name || "Unknown";
+};
+var resolveRating = (player) => {
+  if (!player) return null;
+  const raw = player.rating ?? player.elo;
+  if (raw == null) return null;
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? String(Math.trunc(raw)) : null;
+  }
+  const normalized = toCleanString(raw);
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? String(Math.trunc(parsed)) : null;
+};
+var formatPlayerDisplay = (player) => {
+  const parts = [];
+  const flag = resolveFlag(player);
+  const title = resolveTitle(player);
+  const name = resolveName(player);
+  const rating = resolveRating(player);
+  if (flag) parts.push(flag);
+  if (title) parts.push(title);
+  parts.push(name);
+  if (rating) parts.push(rating);
+  return parts.join(" \u2022 ");
+};
+
 // src/index.ts
 var CORE_VERSION = "0.0.0";
 function coreHello() {
@@ -311,6 +366,7 @@ function coreHello() {
   BOARD_THEME,
   CORE_VERSION,
   coreHello,
+  formatPlayerDisplay,
   getLiveTournaments,
   getTournamentGames,
   getTournaments

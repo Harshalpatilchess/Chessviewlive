@@ -4,9 +4,14 @@ import { parseBoardIdentifier } from "@/lib/boardId";
 import { getWorldCupPgnForBoard } from "@/lib/demoPgns";
 import { buildMockTournamentPayload, buildMockTournamentSnapshot } from "@/lib/live/mockTournamentFeed";
 import { deriveFenFromPgn } from "@/lib/chess/pgnServer";
-import type { DgtBoardState } from "@/lib/live/dgtPayload";
-import { getTournamentGameManifest } from "@/lib/tournamentManifest";
+import type { DgtBoardState, DgtLivePayload } from "@/lib/live/dgtPayload";
+import { normalizeBoardPlayers } from "@/lib/live/playerNormalization";
+import { enrichPlayerFromRoster } from "@/lib/live/rosterEnrichment";
+import { getTournamentBoardsForRound, getTournamentGameManifest } from "@/lib/tournamentManifest";
+import { getBroadcastTournament } from "@/lib/broadcasts/catalog";
+import { fetchLichessBroadcastRound, fetchLichessBroadcastTournament } from "@/lib/sources/lichessBroadcast";
 import { resolveWorldCupReplayMoves } from "@/lib/replay/worldCupPgnResolver";
+import { getOfficialWorldCupRoundSnapshot } from "@/lib/sources/officialWorldCupZip";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -14,6 +19,8 @@ export const fetchCache = "force-no-store";
 
 const INITIAL_CHESS_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const WORLD_CUP_SLUG = "worldcup2025";
+const UPSTREAM_SOURCE = "upstream";
+const MOCK_SOURCE = "mock";
 const CLOCK_DEBUG_ALLOW_ENV = "ALLOW_TOURNAMENT_LIVE_CLOCK_DEBUG";
 const CLOCK_KEYWORD_MATCHERS = [
   "clock",
@@ -38,6 +45,12 @@ type ReplayClockMergeResult = {
   mergeAttempted: boolean;
   mergeAppliedBoards: number[];
   replayProbeSources: ClockProbeSource[];
+};
+
+type UpstreamDemoPayloadResult = {
+  payload: DgtLivePayload;
+  clockProbeSources: ClockProbeSource[];
+  upstreamTargets: string[];
 };
 
 const hasFenValue = (value?: string | null) =>
@@ -100,7 +113,123 @@ const isClockProbeEnabled = (clockProbeRequested: boolean): boolean => {
 const buildNormalizedBoardId = (slug: string, round: number, board: number) =>
   `${slug.trim().toLowerCase()}-board${Math.floor(round)}.${Math.floor(board)}`;
 
-const shouldMergeReplayClocks = (tournamentSlug: string) => tournamentSlug.trim().toLowerCase() === WORLD_CUP_SLUG;
+const buildCanonicalManifestPlayerFallback = (
+  tournamentSlug: string,
+  round: number,
+  boardNumber: number,
+  side: "white" | "black"
+) => {
+  const manifestGame = getTournamentGameManifest(tournamentSlug, round, boardNumber);
+  if (!manifestGame) return undefined;
+  return side === "white"
+    ? {
+        name: manifestGame.white ?? null,
+        title: manifestGame.whiteTitle ?? null,
+        rating: manifestGame.whiteRating ?? null,
+        federation: manifestGame.whiteCountry ?? null,
+        country: manifestGame.whiteCountry ?? null,
+        flag: manifestGame.whiteFlag ?? null,
+      }
+    : {
+        name: manifestGame.black ?? null,
+        title: manifestGame.blackTitle ?? null,
+        rating: manifestGame.blackRating ?? null,
+        federation: manifestGame.blackCountry ?? null,
+        country: manifestGame.blackCountry ?? null,
+        flag: manifestGame.blackFlag ?? null,
+      };
+};
+
+const withCanonicalBoardPlayers = (
+  tournamentSlug: string,
+  round: number,
+  board: DgtBoardState,
+  debug: boolean
+): DgtBoardState => {
+  const boardNo = Number.isFinite(Number(board.board)) ? Math.floor(Number(board.board)) : null;
+  if (!boardNo || boardNo < 1) return board;
+  const boardId = buildNormalizedBoardId(tournamentSlug, round, boardNo);
+  const normalizedPlayers = normalizeBoardPlayers({
+    white: board.white,
+    black: board.black,
+    whiteName: board.whiteName ?? null,
+    blackName: board.blackName ?? null,
+    pgn: board.pgn ?? null,
+    manifestWhite: buildCanonicalManifestPlayerFallback(tournamentSlug, round, boardNo, "white"),
+    manifestBlack: buildCanonicalManifestPlayerFallback(tournamentSlug, round, boardNo, "black"),
+    allowManifestFallback: true,
+  });
+  const white = enrichPlayerFromRoster(tournamentSlug, normalizedPlayers.white, { debug });
+  const black = enrichPlayerFromRoster(tournamentSlug, normalizedPlayers.black, { debug });
+  return {
+    ...board,
+    boardId,
+    white,
+    black,
+    whiteName: normalizedPlayers.whiteName,
+    blackName: normalizedPlayers.blackName,
+  };
+};
+
+const withCanonicalBoardPlayersForList = (
+  tournamentSlug: string,
+  round: number,
+  boards: DgtBoardState[],
+  debug: boolean
+): DgtBoardState[] => boards.map(board => withCanonicalBoardPlayers(tournamentSlug, round, board, debug));
+
+const isWorldCupTournament = (tournamentSlug: string) =>
+  tournamentSlug.trim().toLowerCase() === WORLD_CUP_SLUG;
+
+const getLichessBroadcastId = (tournamentSlug: string): string | null => {
+  const broadcast = getBroadcastTournament(tournamentSlug.trim().toLowerCase());
+  if (!broadcast || broadcast.sourceType !== "lichessBroadcast") return null;
+  const broadcastId = broadcast.lichessBroadcastId?.trim() ?? "";
+  return broadcastId || null;
+};
+
+const isWorldCupLegacyMode = (tournamentSlug: string): boolean =>
+  isWorldCupTournament(tournamentSlug) && !getLichessBroadcastId(tournamentSlug);
+
+const isStrictWorldCupSingleSource = (tournamentSlug: string): boolean =>
+  isWorldCupTournament(tournamentSlug) && Boolean(getLichessBroadcastId(tournamentSlug));
+
+const shouldMergeReplayClocks = (tournamentSlug: string) => {
+  void tournamentSlug;
+  return false;
+};
+
+const normalizeMoveList = (value?: string[] | null): string[] =>
+  Array.isArray(value)
+    ? value.filter((move): move is string => typeof move === "string" && move.trim().length > 0)
+    : [];
+
+const getSideToMoveFromFen = (fen?: string | null): "white" | "black" | null => {
+  if (typeof fen !== "string") return null;
+  const normalizedFen = fen.trim();
+  if (!normalizedFen) return null;
+  const side = normalizedFen.split(/\s+/)[1] ?? "";
+  if (side === "w") return "white";
+  if (side === "b") return "black";
+  return null;
+};
+
+const applyWorldCupClockPolicyToBoard = (board: DgtBoardState): DgtBoardState => ({
+  ...board,
+  whiteTimeMs: null,
+  blackTimeMs: null,
+  clockUpdatedAtMs: null,
+});
+
+const applyClockPolicyToBoards = (tournamentSlug: string, boards: DgtBoardState[]): DgtBoardState[] => {
+  if (!isWorldCupLegacyMode(tournamentSlug)) return boards;
+  return boards.map(applyWorldCupClockPolicyToBoard);
+};
+
+const getResponseClocksAvailable = (tournamentSlug: string, boards: DgtBoardState[]): boolean => {
+  if (isWorldCupLegacyMode(tournamentSlug)) return false;
+  return getClocksAvailable(boards);
+};
 
 const sanitizeUpstreamTarget = (value: string): string => {
   const trimmed = value.trim();
@@ -148,8 +277,10 @@ const buildClockDebugPayload = (options: {
   sources: ClockProbeSource[];
   mergeAttempted: boolean;
   mergeAppliedBoards: number[];
+  sourceUsed?: string;
+  boards?: DgtBoardState[];
 }) => {
-  const { requested, enabled, upstreamTargets, sources, mergeAttempted, mergeAppliedBoards } = options;
+  const { requested, enabled, upstreamTargets, sources, mergeAttempted, mergeAppliedBoards, sourceUsed, boards } = options;
   if (!requested || !enabled) return null;
   const keys = new Set<string>();
   sources.forEach(source => collectClockLikeKeys(source.value, keys));
@@ -158,14 +289,26 @@ const buildClockDebugPayload = (options: {
     .map(sanitizeUpstreamTarget)
     .filter(Boolean)
     .sort();
+  const clockBoardsWithData = Array.from(
+    new Set(
+      (Array.isArray(boards) ? boards : [])
+        .filter(board => hasClockData(board))
+        .map(board => Math.floor(Number(board.board)))
+        .filter(board => Number.isFinite(board) && board > 0)
+    )
+  ).sort((a, b) => a - b);
+  const uniqueMergedBoards = Array.from(new Set(mergeAppliedBoards)).sort((a, b) => a - b);
   return {
     enabled: true,
     requested: true,
+    sourceUsed: sourceUsed ?? "none",
     upstream,
     clockLikeKeysFound: clockLikeKeys.length > 0,
     clockLikeKeys,
     mergeAttempted,
-    mergeAppliedBoards: Array.from(new Set(mergeAppliedBoards)).sort((a, b) => a - b),
+    mergeAppliedBoards: uniqueMergedBoards,
+    clocksMerged: uniqueMergedBoards.length > 0,
+    clockBoardsWithData,
   };
 };
 
@@ -312,6 +455,151 @@ const manifestResultToDgt = (result?: string | null): DgtBoardState["result"] =>
   return null;
 };
 
+const buildWorldCupSingleSourceBoard = async (
+  round: number,
+  boardNumber: number
+): Promise<DgtBoardState> => {
+  const manifestGame = getTournamentGameManifest(WORLD_CUP_SLUG, round, boardNumber);
+  const normalizedBoardId = buildNormalizedBoardId(WORLD_CUP_SLUG, round, boardNumber);
+
+  let replayMoves: string[] = [];
+  try {
+    const replay = await resolveWorldCupReplayMoves(normalizedBoardId);
+    replayMoves = normalizeMoveList(replay.moveList);
+  } catch {
+    replayMoves = [];
+  }
+
+  const manifestMoves = normalizeMoveList(manifestGame?.moveList ?? null);
+  const moveList = replayMoves.length > 0 ? replayMoves : manifestMoves;
+  const manifestFinalFen =
+    typeof manifestGame?.finalFen === "string" && manifestGame.finalFen.trim().length > 0
+      ? manifestGame.finalFen.trim()
+      : null;
+  const manifestPreviewFen =
+    typeof manifestGame?.previewFen === "string" && manifestGame.previewFen.trim().length > 0
+      ? manifestGame.previewFen.trim()
+      : null;
+  const replayFen = deriveFenFromMoves(moveList);
+  const finalFen = replayFen ?? manifestFinalFen ?? null;
+  const fen = finalFen ?? manifestPreviewFen ?? INITIAL_CHESS_FEN;
+  const status = manifestGame
+    ? manifestStatusToDgt(manifestGame.status ?? null)
+    : moveList.length > 0
+      ? "finished"
+      : "scheduled";
+  const result = manifestResultToDgt(manifestGame?.result ?? null);
+
+  return applyWorldCupClockPolicyToBoard(
+    withNormalizedClockFields({
+      board: boardNumber,
+      status,
+      result,
+      white: manifestGame?.white ?? null,
+      black: manifestGame?.black ?? null,
+      moveList,
+      fen,
+      finalFen,
+      sideToMove: getSideToMoveFromFen(fen),
+      fenSource: finalFen ? "worldcupSingleSource" : "initialFallback",
+    })
+  );
+};
+
+const buildWorldCupSingleSourcePayload = async (round: number): Promise<DgtLivePayload | null> => {
+  const boardNumbers = getTournamentBoardsForRound(WORLD_CUP_SLUG, round);
+  if (!boardNumbers || boardNumbers.length === 0) return null;
+  const boards = await Promise.all(
+    boardNumbers.map(boardNumber => buildWorldCupSingleSourceBoard(round, boardNumber))
+  );
+  const normalizedBoards = normalizeBoardsWithClockContract(
+    applyClockPolicyToBoards(WORLD_CUP_SLUG, boards)
+  );
+  return {
+    tournamentSlug: WORLD_CUP_SLUG,
+    round,
+    boards: normalizedBoards,
+    clocksAvailable: false,
+  };
+};
+
+const mapLichessStatusToDgt = (status: "live" | "final" | "scheduled"): DgtBoardState["status"] => {
+  if (status === "final") return "finished";
+  if (status === "scheduled") return "scheduled";
+  return "live";
+};
+
+const fetchClockDemoUpstreamPayload = async (options: {
+  tournamentSlug: string;
+  round: number;
+  clockProbeEnabled: boolean;
+}): Promise<UpstreamDemoPayloadResult | null> => {
+  const { tournamentSlug, round, clockProbeEnabled } = options;
+  const normalizedSlug = tournamentSlug.trim().toLowerCase();
+  const broadcast = getBroadcastTournament(normalizedSlug);
+  if (!broadcast || broadcast.sourceType !== "lichessBroadcast" || !broadcast.lichessBroadcastId) {
+    return null;
+  }
+
+  const tournamentResult = await fetchLichessBroadcastTournament({
+    tournamentId: broadcast.lichessBroadcastId,
+    debug: clockProbeEnabled,
+  });
+  const roundsMeta = tournamentResult.snapshot.rounds;
+  const roundIdOverride = roundsMeta[round - 1]?.id ?? tournamentResult.snapshot.activeRoundId ?? null;
+  const payload = await fetchLichessBroadcastRound({
+    tournamentId: broadcast.lichessBroadcastId,
+    roundIdOverride,
+    debug: clockProbeEnabled,
+  });
+
+  const boards = payload.boards.map(board =>
+    withNormalizedClockFields({
+      board: board.boardNo,
+      status: mapLichessStatusToDgt(board.status),
+      result: board.result,
+      moveList: board.moveList,
+      whiteTimeMs: board.whiteTimeMs ?? null,
+      blackTimeMs: board.blackTimeMs ?? null,
+      sideToMove: board.sideToMove ?? null,
+      clockUpdatedAtMs: board.clockUpdatedAtMs ?? null,
+      white: {
+        name: board.whiteName,
+        ...(board.whiteTitle ? { title: board.whiteTitle } : {}),
+        ...(board.whiteElo != null ? { rating: board.whiteElo } : {}),
+        ...(board.whiteCountry ? { federation: board.whiteCountry, country: board.whiteCountry, flag: board.whiteCountry } : {}),
+      },
+      black: {
+        name: board.blackName,
+        ...(board.blackTitle ? { title: board.blackTitle } : {}),
+        ...(board.blackElo != null ? { rating: board.blackElo } : {}),
+        ...(board.blackCountry ? { federation: board.blackCountry, country: board.blackCountry, flag: board.blackCountry } : {}),
+      },
+      fenSource: "broadcastPgn",
+    })
+  );
+
+  const upstreamTargets = new Set<string>();
+  upstreamTargets.add("https://lichess.org/api/broadcast/<tournamentId>");
+  if (typeof payload.debug?.pgnUrlUsed === "string" && payload.debug.pgnUrlUsed.trim().length > 0) {
+    upstreamTargets.add(payload.debug.pgnUrlUsed.trim());
+  }
+  const probeSources: ClockProbeSource[] = clockProbeEnabled
+    ? [{ name: "lichessBroadcastBoards", value: payload.boards }]
+    : [];
+
+  return {
+    payload: {
+      tournamentSlug: normalizedSlug,
+      round,
+      boards,
+      clocksAvailable: getClocksAvailable(boards),
+    },
+    clockProbeSources: probeSources,
+    upstreamTargets: Array.from(upstreamTargets),
+  };
+};
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const slug =
@@ -333,10 +621,170 @@ export async function GET(req: Request) {
   }
   const safeRound = Math.floor(round);
   const normalizedSlug = slug.trim().toLowerCase();
+  const strictWorldCupSingleSource = isStrictWorldCupSingleSource(normalizedSlug);
 
   const debugHeaderValue = debug
     ? `url=${url.toString()}; bootstrap=${url.searchParams.get("bootstrap") ?? ""}; active=${bootstrap ? "1" : "0"}`
     : null;
+
+  if (isWorldCupTournament(normalizedSlug)) {
+    // Manual verification:
+    // curl 'http://localhost:3000/api/tournament/live?slug=worldcup2025&round=1&debug=clock'
+    // Expect HTTP 200 with non-empty boards; replay board identity should match the board tile clicked.
+    const responseHeaders = new Headers({ "Cache-Control": "no-store" });
+    const withWorldCupAliases = (games: DgtBoardState[]) => {
+      const boards = games;
+      const pairings = games;
+      return {
+        boards,
+        games,
+        pairings,
+        roundData: {
+          boards,
+          games,
+          pairings,
+        },
+      };
+    };
+    if (debugHeaderValue) {
+      responseHeaders.set("X-CV-LIVE-DEBUG", debugHeaderValue);
+    }
+    try {
+      const snapshot = await getOfficialWorldCupRoundSnapshot(safeRound);
+      const boards = snapshot.boards.map(board =>
+        withNormalizedClockFields({
+          board: board.board,
+          white: board.white,
+          black: board.black,
+          status: board.status,
+          result: board.result,
+          moveList: board.moveList,
+          fen: board.finalFen ?? INITIAL_CHESS_FEN,
+          finalFen: board.finalFen,
+          whiteTimeMs: board.whiteTimeMs,
+          blackTimeMs: board.blackTimeMs,
+          clockUpdatedAtMs: board.clockUpdatedAtMs,
+          sideToMove: board.sideToMove,
+          fenSource: "officialPgn",
+        })
+      );
+      const canonicalBoards = withCanonicalBoardPlayersForList(normalizedSlug, safeRound, boards, debug);
+      const worldCupPayloadAliases = withWorldCupAliases(canonicalBoards);
+
+      const clockProbeUpstreamTargets = new Set<string>();
+      const clockProbeSources: ClockProbeSource[] = [];
+      if (clockProbeEnabled) {
+        clockProbeUpstreamTargets.add("official://worldcup-zip");
+        clockProbeSources.push({
+          name: "officialSnapshotDebug",
+          value: snapshot.debug,
+        });
+      }
+
+      if (boardIdParam) {
+        const numericBoard = Number(boardIdParam);
+        const parsed = parseBoardIdentifier(boardIdParam, slug);
+        const boardNumber = Number.isFinite(numericBoard)
+          ? Math.floor(numericBoard)
+          : Number.isFinite(parsed.board)
+            ? Math.floor(parsed.board)
+            : null;
+        const responsePayload = {
+          tournamentSlug: normalizedSlug,
+          round: safeRound,
+          ...withWorldCupAliases([] as DgtBoardState[]),
+          board: null as DgtBoardState | null,
+          clocksAvailable: false,
+          reason: "notFound",
+          source: "official",
+        };
+        if (!boardNumber || boardNumber < 1) {
+          const clockDebug = buildClockDebugPayload({
+            requested: clockProbeRequested,
+            enabled: clockProbeEnabled,
+            upstreamTargets: clockProbeUpstreamTargets,
+            sources: clockProbeSources,
+            mergeAttempted: false,
+            mergeAppliedBoards: [],
+            sourceUsed: "official",
+            boards: [],
+          });
+          return NextResponse.json(
+            {
+              ...responsePayload,
+              reason: "invalidBoardId",
+              ...(clockDebug ? { clockDebug } : {}),
+            },
+            { status: 200, headers: responseHeaders }
+          );
+        }
+        const selectedBoard = canonicalBoards.find(board => board.board === boardNumber) ?? null;
+        if (clockProbeEnabled) {
+          clockProbeSources.push({
+            name: "officialBoard",
+            value: selectedBoard,
+          });
+        }
+        const responseBoards = selectedBoard ? [selectedBoard] : [];
+        const responseAliases = withWorldCupAliases(responseBoards);
+        const clockDebug = buildClockDebugPayload({
+          requested: clockProbeRequested,
+          enabled: clockProbeEnabled,
+          upstreamTargets: clockProbeUpstreamTargets,
+          sources: clockProbeSources,
+          mergeAttempted: false,
+          mergeAppliedBoards: [],
+          sourceUsed: "official",
+          boards: responseBoards,
+        });
+        return NextResponse.json(
+          {
+            ...responsePayload,
+            board: selectedBoard,
+            ...responseAliases,
+            clocksAvailable: getClocksAvailable(responseBoards),
+            reason: selectedBoard ? null : "notFound",
+            ...(clockDebug ? { clockDebug } : {}),
+          },
+          { status: 200, headers: responseHeaders }
+        );
+      }
+
+      if (clockProbeEnabled) {
+        clockProbeSources.push({
+          name: "officialPayloadBoards",
+          value: canonicalBoards,
+        });
+      }
+      const clockDebug = buildClockDebugPayload({
+        requested: clockProbeRequested,
+        enabled: clockProbeEnabled,
+        upstreamTargets: clockProbeUpstreamTargets,
+        sources: clockProbeSources,
+        mergeAttempted: false,
+        mergeAppliedBoards: [],
+        sourceUsed: "official",
+        boards: canonicalBoards,
+      });
+      return NextResponse.json(
+        {
+          tournamentSlug: normalizedSlug,
+          round: safeRound,
+          source: "official",
+          ...worldCupPayloadAliases,
+          clocksAvailable: getClocksAvailable(canonicalBoards),
+          ...(clockDebug ? { clockDebug } : {}),
+        },
+        { status: 200, headers: responseHeaders }
+      );
+    } catch (error) {
+      if (clockProbeRequested && clockProbeEnabled) {
+        const reason = error instanceof Error ? error.message : "official_unavailable";
+        responseHeaders.set("X-CV-CLOCK-DEBUG", `official_unavailable:${reason}`);
+      }
+      return new NextResponse(null, { status: 204, headers: responseHeaders });
+    }
+  }
 
   if (boardIdParam) {
     const numericBoard = Number(boardIdParam);
@@ -364,6 +812,8 @@ export async function GET(req: Request) {
         sources: [],
         mergeAttempted: false,
         mergeAppliedBoards: [],
+        sourceUsed: "none",
+        boards: [],
       });
       const response = NextResponse.json({ ...responsePayload, reason: "invalidBoardId" }, { status: 200 });
       response.headers.set("Cache-Control", "no-store");
@@ -384,13 +834,126 @@ export async function GET(req: Request) {
     try {
       const clockProbeUpstreamTargets = new Set<string>();
       const clockProbeSources: ClockProbeSource[] = [];
-      const payload = buildMockTournamentPayload(normalizedSlug, safeRound);
+
+      if (isWorldCupLegacyMode(normalizedSlug)) {
+        const worldCupPayload = await buildWorldCupSingleSourcePayload(safeRound);
+        const worldCupBoard =
+          worldCupPayload?.boards.find(board => board.board === boardNumber) ?? null;
+        const responseBoards = applyClockPolicyToBoards(
+          normalizedSlug,
+          worldCupBoard ? [worldCupBoard] : []
+        );
+        const canonicalResponseBoards = withCanonicalBoardPlayersForList(
+          normalizedSlug,
+          safeRound,
+          responseBoards,
+          debug
+        );
+        if (clockProbeEnabled) {
+          clockProbeUpstreamTargets.add("local://worldcup-single-source");
+          clockProbeSources.push({
+            name: "worldCupSingleSourceBoard",
+            value: worldCupBoard,
+          });
+        }
+        const clockDebug = buildClockDebugPayload({
+          requested: clockProbeRequested,
+          enabled: clockProbeEnabled,
+          upstreamTargets: clockProbeUpstreamTargets,
+          sources: clockProbeSources,
+          mergeAttempted: false,
+          mergeAppliedBoards: [],
+          sourceUsed: MOCK_SOURCE,
+          boards: canonicalResponseBoards,
+        });
+        const response = NextResponse.json(
+          {
+            ...responsePayload,
+            board: canonicalResponseBoards[0] ?? null,
+            boards: canonicalResponseBoards,
+            clocksAvailable: false,
+            reason: canonicalResponseBoards.length > 0 ? null : "notFound",
+            source: MOCK_SOURCE,
+            ...(debug
+              ? {
+                  debug: {
+                    ...(rescue
+                      ? {
+                          rescue: true,
+                          rescueBoard,
+                        }
+                      : {}),
+                    requestedBoardId: boardIdParam,
+                    matchedKey: normalizedBoardId,
+                    boardFound: canonicalResponseBoards.length > 0,
+                    fenSource: canonicalResponseBoards[0]?.fenSource ?? "notFound",
+                    upstreamAttempted: false,
+                    upstreamStatus: null,
+                  },
+                }
+              : {}),
+            ...(clockDebug ? { clockDebug } : {}),
+          },
+          { status: 200 }
+        );
+        response.headers.set("Cache-Control", "no-store");
+        if (debug) {
+          response.headers.set("X-CV-LIVE-SOURCE", MOCK_SOURCE);
+        }
+        return response;
+      }
+
+      let upstreamPayloadResult: UpstreamDemoPayloadResult | null = null;
+      try {
+        upstreamPayloadResult = await fetchClockDemoUpstreamPayload({
+          tournamentSlug: normalizedSlug,
+          round: safeRound,
+          clockProbeEnabled,
+        });
+      } catch {
+        upstreamPayloadResult = null;
+      }
+      if (strictWorldCupSingleSource && !upstreamPayloadResult) {
+        const clockDebug = buildClockDebugPayload({
+          requested: clockProbeRequested,
+          enabled: clockProbeEnabled,
+          upstreamTargets: clockProbeUpstreamTargets,
+          sources: clockProbeSources,
+          mergeAttempted: false,
+          mergeAppliedBoards: [],
+          sourceUsed: UPSTREAM_SOURCE,
+          boards: [],
+        });
+        const response = NextResponse.json(
+          {
+            ...responsePayload,
+            reason: "upstreamUnavailable",
+            source: UPSTREAM_SOURCE,
+            ...(clockDebug ? { clockDebug } : {}),
+          },
+          { status: 200 }
+        );
+        response.headers.set("Cache-Control", "no-store");
+        if (debug) {
+          response.headers.set("X-CV-LIVE-SOURCE", UPSTREAM_SOURCE);
+        }
+        return response;
+      }
+
+      const payload = strictWorldCupSingleSource
+        ? upstreamPayloadResult?.payload ?? null
+        : upstreamPayloadResult?.payload ?? buildMockTournamentPayload(normalizedSlug, safeRound);
       const payloadBoard =
         payload?.boards.find(board => board.board === boardNumber) ?? null;
-      const snapshot = payloadBoard ? null : buildMockTournamentSnapshot(normalizedSlug, safeRound);
+      const snapshot =
+        strictWorldCupSingleSource || payloadBoard
+          ? null
+          : buildMockTournamentSnapshot(normalizedSlug, safeRound);
       const snapshotBoard =
         snapshot?.boards.find(board => board.board === boardNumber) ?? null;
-      const manifestGame = getTournamentGameManifest(normalizedSlug, safeRound, boardNumber);
+      const manifestGame = strictWorldCupSingleSource
+        ? null
+        : getTournamentGameManifest(normalizedSlug, safeRound, boardNumber);
       const manifestBoard: DgtBoardState | null = manifestGame
         ? {
             board: boardNumber,
@@ -406,15 +969,30 @@ export async function GET(req: Request) {
           }
         : null;
       if (clockProbeEnabled) {
-        clockProbeUpstreamTargets.add("local://buildMockTournamentPayload");
-        clockProbeUpstreamTargets.add("local://buildMockTournamentSnapshot");
-        clockProbeUpstreamTargets.add("local://getTournamentGameManifest");
+        if (upstreamPayloadResult) {
+          upstreamPayloadResult.upstreamTargets.forEach(target => clockProbeUpstreamTargets.add(target));
+          upstreamPayloadResult.clockProbeSources.forEach(source => clockProbeSources.push(source));
+        } else if (!strictWorldCupSingleSource) {
+          clockProbeUpstreamTargets.add("local://buildMockTournamentPayload");
+          clockProbeUpstreamTargets.add("local://buildMockTournamentSnapshot");
+        }
+        if (!strictWorldCupSingleSource) {
+          clockProbeUpstreamTargets.add("local://getTournamentGameManifest");
+        }
         clockProbeSources.push({ name: "payloadBoard", value: payloadBoard });
         clockProbeSources.push({ name: "snapshotBoard", value: snapshotBoard });
         clockProbeSources.push({ name: "manifestBoard", value: manifestBoard });
       }
       let board = payloadBoard ?? snapshotBoard ?? manifestBoard;
-      let source = payloadBoard ? "payload" : snapshotBoard ? "snapshot" : manifestBoard ? "manifest" : "none";
+      let source = payloadBoard
+        ? upstreamPayloadResult
+          ? UPSTREAM_SOURCE
+          : "payload"
+        : snapshotBoard
+          ? "snapshot"
+          : manifestBoard
+            ? "manifest"
+            : "none";
       let fenSource:
         | "live"
         | "pgnDerived"
@@ -502,7 +1080,7 @@ export async function GET(req: Request) {
         (boardMoves && !moveListDerivedOk) ||
         (pgnParseMeta ? pgnParseMeta.movesAppliedCount === 0 : false);
 
-      if (needsUpstream && normalizedSlug === WORLD_CUP_SLUG && safeRound === 1) {
+      if (needsUpstream && isWorldCupLegacyMode(normalizedSlug) && safeRound === 1) {
         upstreamAttempted = true;
         upstreamPgn = getWorldCupPgnForBoard(boardNumber);
         upstreamStatus = upstreamPgn ? 200 : 404;
@@ -600,8 +1178,15 @@ export async function GET(req: Request) {
         }
       }
 
-      const responseBoards = board ? [board] : [];
-      const clocksAvailable = getClocksAvailable(responseBoards);
+      const responseBoards = applyClockPolicyToBoards(normalizedSlug, board ? [board] : []);
+      const canonicalResponseBoards = withCanonicalBoardPlayersForList(
+        normalizedSlug,
+        safeRound,
+        responseBoards,
+        debug
+      );
+      const canonicalBoard = canonicalResponseBoards[0] ?? null;
+      const clocksAvailable = getResponseClocksAvailable(normalizedSlug, canonicalResponseBoards);
       const clockDebug = buildClockDebugPayload({
         requested: clockProbeRequested,
         enabled: clockProbeEnabled,
@@ -609,14 +1194,16 @@ export async function GET(req: Request) {
         sources: clockProbeSources,
         mergeAttempted: clockMergeAttempted,
         mergeAppliedBoards: clockMergeAppliedBoards,
+        sourceUsed: source,
+        boards: canonicalResponseBoards,
       });
       const response = NextResponse.json(
         {
           ...responsePayload,
-          board: board ?? null,
-          boards: responseBoards,
+          board: canonicalBoard,
+          boards: canonicalResponseBoards,
           clocksAvailable,
-          reason: board ? null : "notFound",
+          reason: canonicalBoard ? null : "notFound",
           source,
           ...(debug
             ? {
@@ -629,7 +1216,7 @@ export async function GET(req: Request) {
                     : {}),
                   requestedBoardId: boardIdParam,
                   matchedKey: normalizedBoardId,
-                  boardFound: Boolean(board),
+                  boardFound: Boolean(canonicalBoard),
                   fenSource,
                   upstreamAttempted,
                   upstreamStatus,
@@ -674,8 +1261,34 @@ export async function GET(req: Request) {
       }
       const clockProbeUpstreamTargets = new Set<string>();
       const clockProbeSources: ClockProbeSource[] = [];
-      if (clockProbeEnabled) {
+      if (clockProbeEnabled && !strictWorldCupSingleSource) {
         clockProbeUpstreamTargets.add("local://getTournamentGameManifest");
+      }
+      if (strictWorldCupSingleSource) {
+        const clockDebug = buildClockDebugPayload({
+          requested: clockProbeRequested,
+          enabled: clockProbeEnabled,
+          upstreamTargets: clockProbeUpstreamTargets,
+          sources: clockProbeSources,
+          mergeAttempted: false,
+          mergeAppliedBoards: [],
+          sourceUsed: UPSTREAM_SOURCE,
+          boards: [],
+        });
+        const response = NextResponse.json(
+          {
+            ...responsePayload,
+            reason: "upstreamUnavailable",
+            source: UPSTREAM_SOURCE,
+            ...(clockDebug ? { clockDebug } : {}),
+          },
+          { status: 200 }
+        );
+        response.headers.set("Cache-Control", "no-store");
+        if (debug) {
+          response.headers.set("X-CV-LIVE-SOURCE", UPSTREAM_SOURCE);
+        }
+        return response;
       }
       let boardFound = false;
       let fallbackBoard: DgtBoardState | null = null;
@@ -714,10 +1327,23 @@ export async function GET(req: Request) {
         }
         fallbackBoard.fenSource = fenSource;
         fallbackBoard = withNormalizedClockFields(fallbackBoard);
+        if (isWorldCupLegacyMode(normalizedSlug)) {
+          fallbackBoard = applyWorldCupClockPolicyToBoard(fallbackBoard);
+        }
       }
 
-      const responseBoards = boardFound && fallbackBoard ? [fallbackBoard] : [];
-      const clocksAvailable = getClocksAvailable(responseBoards);
+      const responseBoards = applyClockPolicyToBoards(
+        normalizedSlug,
+        boardFound && fallbackBoard ? [fallbackBoard] : []
+      );
+      const canonicalResponseBoards = withCanonicalBoardPlayersForList(
+        normalizedSlug,
+        safeRound,
+        responseBoards,
+        debug
+      );
+      const canonicalFallbackBoard = canonicalResponseBoards[0] ?? null;
+      const clocksAvailable = getResponseClocksAvailable(normalizedSlug, canonicalResponseBoards);
       const clockDebug = buildClockDebugPayload({
         requested: clockProbeRequested,
         enabled: clockProbeEnabled,
@@ -725,14 +1351,16 @@ export async function GET(req: Request) {
         sources: clockProbeSources,
         mergeAttempted: false,
         mergeAppliedBoards: [],
+        sourceUsed: "error",
+        boards: canonicalResponseBoards,
       });
       const response = NextResponse.json(
         {
           ...responsePayload,
-          board: boardFound ? fallbackBoard : null,
-          boards: responseBoards,
+          board: canonicalFallbackBoard,
+          boards: canonicalResponseBoards,
           clocksAvailable,
-          reason: boardFound ? null : "notFound",
+          reason: canonicalFallbackBoard ? null : "notFound",
           source: "error",
           ...(debug
             ? {
@@ -745,17 +1373,17 @@ export async function GET(req: Request) {
                     : {}),
                   requestedBoardId: boardIdParam,
                   matchedKey: normalizedBoardId,
-                  boardFound,
-                  fen: fallbackBoard?.fen ?? null,
+                  boardFound: Boolean(canonicalFallbackBoard),
+                  fen: canonicalFallbackBoard?.fen ?? null,
                   fenSource,
                   upstreamAttempted: false,
                   upstreamStatus: null,
-                  movesCount: Array.isArray(fallbackBoard?.moveList)
-                    ? fallbackBoard!.moveList.length
-                    : Array.isArray(fallbackBoard?.moves)
-                      ? fallbackBoard!.moves.length
+                  movesCount: Array.isArray(canonicalFallbackBoard?.moveList)
+                    ? canonicalFallbackBoard.moveList.length
+                    : Array.isArray(canonicalFallbackBoard?.moves)
+                      ? canonicalFallbackBoard.moves.length
                       : 0,
-                  hasPgn: Boolean(fallbackBoard?.pgn),
+                  hasPgn: Boolean(canonicalFallbackBoard?.pgn),
                   error: {
                     message,
                     where,
@@ -777,8 +1405,80 @@ export async function GET(req: Request) {
   }
 
   if (bootstrap) {
+    if (isWorldCupLegacyMode(normalizedSlug)) {
+      const snapshot = (await buildWorldCupSingleSourcePayload(safeRound)) ?? {
+        tournamentSlug: normalizedSlug,
+        round: safeRound,
+        boards: [] as DgtBoardState[],
+      };
+      const clockProbeUpstreamTargets = new Set<string>();
+      const clockProbeSources: ClockProbeSource[] = [];
+      if (clockProbeEnabled) {
+        clockProbeUpstreamTargets.add("local://worldcup-single-source");
+        clockProbeSources.push({ name: "snapshotBoards", value: snapshot.boards });
+      }
+      const normalizedBoardsBase = normalizeBoardsWithClockContract(
+        applyClockPolicyToBoards(normalizedSlug, snapshot.boards)
+      );
+      const normalizedBoards = withCanonicalBoardPlayersForList(
+        normalizedSlug,
+        safeRound,
+        normalizedBoardsBase,
+        debug
+      );
+      const clockDebug = buildClockDebugPayload({
+        requested: clockProbeRequested,
+        enabled: clockProbeEnabled,
+        upstreamTargets: clockProbeUpstreamTargets,
+        sources: clockProbeSources,
+        mergeAttempted: false,
+        mergeAppliedBoards: [],
+        sourceUsed: MOCK_SOURCE,
+        boards: normalizedBoards,
+      });
+      const normalizedSnapshot = {
+        ...snapshot,
+        source: MOCK_SOURCE,
+        boards: normalizedBoards,
+        clocksAvailable: false,
+        ...(clockDebug ? { clockDebug } : {}),
+      };
+      const response = NextResponse.json(normalizedSnapshot, { status: 200 });
+      response.headers.set("Cache-Control", "no-store");
+      if (debugHeaderValue) {
+        response.headers.set("X-CV-LIVE-DEBUG", debugHeaderValue);
+        console.log("[tournament-live] bootstrap", {
+          url: url.toString(),
+          bootstrapParam: url.searchParams.get("bootstrap"),
+          bootstrapActive: bootstrap,
+        });
+      }
+      return response;
+    }
+
+    let upstreamPayloadResult: UpstreamDemoPayloadResult | null = null;
+    try {
+      upstreamPayloadResult = await fetchClockDemoUpstreamPayload({
+        tournamentSlug: normalizedSlug,
+        round: safeRound,
+        clockProbeEnabled,
+      });
+    } catch {
+      upstreamPayloadResult = null;
+    }
+    if (strictWorldCupSingleSource && !upstreamPayloadResult) {
+      return new NextResponse(null, {
+        status: 204,
+        headers: {
+          "Cache-Control": "no-store",
+          ...(debugHeaderValue ? { "X-CV-LIVE-DEBUG": debugHeaderValue } : {}),
+        },
+      });
+    }
+    const source = upstreamPayloadResult ? UPSTREAM_SOURCE : MOCK_SOURCE;
     const snapshot =
-      buildMockTournamentSnapshot(normalizedSlug, safeRound) ?? {
+      upstreamPayloadResult?.payload ??
+      (strictWorldCupSingleSource ? null : buildMockTournamentSnapshot(normalizedSlug, safeRound)) ?? {
         tournamentSlug: normalizedSlug,
         round: safeRound,
         boards: [],
@@ -786,7 +1486,12 @@ export async function GET(req: Request) {
     const clockProbeUpstreamTargets = new Set<string>();
     const clockProbeSources: ClockProbeSource[] = [];
     if (clockProbeEnabled) {
-      clockProbeUpstreamTargets.add("local://buildMockTournamentSnapshot");
+      if (upstreamPayloadResult) {
+        upstreamPayloadResult.upstreamTargets.forEach(target => clockProbeUpstreamTargets.add(target));
+        upstreamPayloadResult.clockProbeSources.forEach(probeSource => clockProbeSources.push(probeSource));
+      } else if (!strictWorldCupSingleSource) {
+        clockProbeUpstreamTargets.add("local://buildMockTournamentSnapshot");
+      }
       clockProbeSources.push({ name: "snapshotBoards", value: snapshot.boards });
     }
     const replayClockMerge = await mergeWorldCupReplayClocks({
@@ -799,7 +1504,15 @@ export async function GET(req: Request) {
       replayClockMerge.replayProbeSources.forEach(source => clockProbeSources.push(source));
       clockProbeUpstreamTargets.add("apps/web/public/tournaments/worldcup2025/pgn/<boardId>.pgn");
     }
-    const normalizedBoards = normalizeBoardsWithClockContract(replayClockMerge.boards);
+    const normalizedBoardsBase = normalizeBoardsWithClockContract(
+      applyClockPolicyToBoards(normalizedSlug, replayClockMerge.boards)
+    );
+    const normalizedBoards = withCanonicalBoardPlayersForList(
+      normalizedSlug,
+      safeRound,
+      normalizedBoardsBase,
+      debug
+    );
     const clockDebug = buildClockDebugPayload({
       requested: clockProbeRequested,
       enabled: clockProbeEnabled,
@@ -807,11 +1520,14 @@ export async function GET(req: Request) {
       sources: clockProbeSources,
       mergeAttempted: replayClockMerge.mergeAttempted,
       mergeAppliedBoards: replayClockMerge.mergeAppliedBoards,
+      sourceUsed: source,
+      boards: normalizedBoards,
     });
     const normalizedSnapshot = {
       ...snapshot,
+      source,
       boards: normalizedBoards,
-      clocksAvailable: getClocksAvailable(normalizedBoards),
+      clocksAvailable: getResponseClocksAvailable(normalizedSlug, normalizedBoards),
       ...(clockDebug ? { clockDebug } : {}),
     };
     const response = NextResponse.json(normalizedSnapshot, { status: 200 });
@@ -827,7 +1543,85 @@ export async function GET(req: Request) {
     return response;
   }
 
-  const payload = buildMockTournamentPayload(normalizedSlug, safeRound);
+  if (isWorldCupLegacyMode(normalizedSlug)) {
+    const payload = await buildWorldCupSingleSourcePayload(safeRound);
+    if (!payload) {
+      return new NextResponse(null, {
+        status: 204,
+        headers: {
+          "Cache-Control": "no-store",
+          ...(debugHeaderValue ? { "X-CV-LIVE-DEBUG": debugHeaderValue } : {}),
+        },
+      });
+    }
+    const clockProbeUpstreamTargets = new Set<string>();
+    const clockProbeSources: ClockProbeSource[] = [];
+    if (clockProbeEnabled) {
+      clockProbeUpstreamTargets.add("local://worldcup-single-source");
+      clockProbeSources.push({ name: "payloadBoards", value: payload.boards });
+    }
+    const normalizedBoardsBase = normalizeBoardsWithClockContract(
+      applyClockPolicyToBoards(normalizedSlug, payload.boards)
+    );
+    const normalizedBoards = withCanonicalBoardPlayersForList(
+      normalizedSlug,
+      safeRound,
+      normalizedBoardsBase,
+      debug
+    );
+    const clockDebug = buildClockDebugPayload({
+      requested: clockProbeRequested,
+      enabled: clockProbeEnabled,
+      upstreamTargets: clockProbeUpstreamTargets,
+      sources: clockProbeSources,
+      mergeAttempted: false,
+      mergeAppliedBoards: [],
+      sourceUsed: MOCK_SOURCE,
+      boards: normalizedBoards,
+    });
+    const normalizedPayload = {
+      ...payload,
+      source: MOCK_SOURCE,
+      boards: normalizedBoards,
+      clocksAvailable: false,
+      ...(clockDebug ? { clockDebug } : {}),
+    };
+    const response = NextResponse.json(normalizedPayload, { status: 200 });
+    response.headers.set("Cache-Control", "no-store");
+    if (debugHeaderValue) {
+      response.headers.set("X-CV-LIVE-DEBUG", debugHeaderValue);
+      console.log("[tournament-live] poll", {
+        url: url.toString(),
+        bootstrapParam: url.searchParams.get("bootstrap"),
+        bootstrapActive: bootstrap,
+      });
+    }
+    return response;
+  }
+
+  let upstreamPayloadResult: UpstreamDemoPayloadResult | null = null;
+  try {
+    upstreamPayloadResult = await fetchClockDemoUpstreamPayload({
+      tournamentSlug: normalizedSlug,
+      round: safeRound,
+      clockProbeEnabled,
+    });
+  } catch {
+    upstreamPayloadResult = null;
+  }
+  if (strictWorldCupSingleSource && !upstreamPayloadResult) {
+    return new NextResponse(null, {
+      status: 204,
+      headers: {
+        "Cache-Control": "no-store",
+        ...(debugHeaderValue ? { "X-CV-LIVE-DEBUG": debugHeaderValue } : {}),
+      },
+    });
+  }
+  const source = upstreamPayloadResult ? UPSTREAM_SOURCE : MOCK_SOURCE;
+  const payload =
+    upstreamPayloadResult?.payload ??
+    (strictWorldCupSingleSource ? null : buildMockTournamentPayload(normalizedSlug, safeRound));
   if (!payload) {
     return new NextResponse(null, {
       status: 204,
@@ -841,7 +1635,12 @@ export async function GET(req: Request) {
   const clockProbeUpstreamTargets = new Set<string>();
   const clockProbeSources: ClockProbeSource[] = [];
   if (clockProbeEnabled) {
-    clockProbeUpstreamTargets.add("local://buildMockTournamentPayload");
+    if (upstreamPayloadResult) {
+      upstreamPayloadResult.upstreamTargets.forEach(target => clockProbeUpstreamTargets.add(target));
+      upstreamPayloadResult.clockProbeSources.forEach(probeSource => clockProbeSources.push(probeSource));
+    } else if (!strictWorldCupSingleSource) {
+      clockProbeUpstreamTargets.add("local://buildMockTournamentPayload");
+    }
     clockProbeSources.push({ name: "payloadBoards", value: payload.boards });
   }
   const replayClockMerge = await mergeWorldCupReplayClocks({
@@ -854,7 +1653,15 @@ export async function GET(req: Request) {
     replayClockMerge.replayProbeSources.forEach(source => clockProbeSources.push(source));
     clockProbeUpstreamTargets.add("apps/web/public/tournaments/worldcup2025/pgn/<boardId>.pgn");
   }
-  const normalizedBoards = normalizeBoardsWithClockContract(replayClockMerge.boards);
+  const normalizedBoardsBase = normalizeBoardsWithClockContract(
+    applyClockPolicyToBoards(normalizedSlug, replayClockMerge.boards)
+  );
+  const normalizedBoards = withCanonicalBoardPlayersForList(
+    normalizedSlug,
+    safeRound,
+    normalizedBoardsBase,
+    debug
+  );
   const clockDebug = buildClockDebugPayload({
     requested: clockProbeRequested,
     enabled: clockProbeEnabled,
@@ -862,11 +1669,14 @@ export async function GET(req: Request) {
     sources: clockProbeSources,
     mergeAttempted: replayClockMerge.mergeAttempted,
     mergeAppliedBoards: replayClockMerge.mergeAppliedBoards,
+    sourceUsed: source,
+    boards: normalizedBoards,
   });
   const normalizedPayload = {
     ...payload,
+    source,
     boards: normalizedBoards,
-    clocksAvailable: getClocksAvailable(normalizedBoards),
+    clocksAvailable: getResponseClocksAvailable(normalizedSlug, normalizedBoards),
     ...(clockDebug ? { clockDebug } : {}),
   };
   const response = NextResponse.json(normalizedPayload, { status: 200 });

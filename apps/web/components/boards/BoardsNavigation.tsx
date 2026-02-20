@@ -16,7 +16,12 @@ import {
   writeLatestFen,
 } from "@/lib/boards/latestFenCache";
 import type { TournamentGame } from "@/lib/tournamentManifest";
-import { buildBoardIdentifier, normalizeBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
+import {
+  buildBoardIdentifier,
+  normalizeBoardIdentifier,
+  normalizeTournamentSlug,
+  parseBoardIdentifier,
+} from "@/lib/boardId";
 import type { DgtBoardState, DgtLivePayload } from "@/lib/live/dgtPayload";
 import { BoardsNavigationCard } from "@/components/boards/BoardsNavigationCard";
 import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
@@ -42,9 +47,10 @@ type BoardsNavigationProps = {
   compact?: boolean;
   gridColsClassName?: string;
   tournamentSlug?: string;
+  selectedRound?: number;
   mode?: "live" | "replay";
   layout?: "grid" | "list";
-  variant?: "default" | "tournament";
+  variant?: "default" | "tournament" | "viewerLarge";
   viewerEvalBars?: boolean;
   liveUpdatesEnabled?: boolean;
   liveUpdatesIntervalMs?: number;
@@ -279,6 +285,7 @@ export const BoardsNavigation = ({
   compact = false,
   gridColsClassName,
   tournamentSlug,
+  selectedRound,
   mode,
   layout = "grid",
   variant = "default",
@@ -295,7 +302,8 @@ export const BoardsNavigation = ({
   useEffect(() => {
     hydrateLatestFenCache();
   }, []);
-  const resolvedLayout = sidebarOnly ? "list" : variant === "tournament" ? "grid" : layout;
+  const isTournamentVariant = variant === "tournament" || variant === "viewerLarge";
+  const resolvedLayout = sidebarOnly ? "list" : isTournamentVariant ? "grid" : layout;
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -404,14 +412,30 @@ export const BoardsNavigation = ({
   const navFetchErrorRef = useRef<Record<string, { status?: number; textSnippet?: string; ts: number }>>({});
   const viewerEvalBarsEnabledRef = useRef(viewerEvalBarsEnabled);
   const baseBoards = boards ?? [];
+  const normalizedSelectedRound =
+    Number.isFinite(Number(selectedRound ?? NaN)) && Number(selectedRound) >= 1
+      ? Math.floor(Number(selectedRound))
+      : null;
   const liveFeedConfig = useMemo(() => {
-    if (variant !== "tournament" || !tournamentSlug || baseBoards.length === 0) return null;
+    if (!isTournamentVariant || !tournamentSlug) return null;
+    const safeSlug = normalizeTournamentSlug(tournamentSlug);
+    if (!safeSlug) return null;
+    if (baseBoards.length === 0) {
+      if (normalizedSelectedRound == null) return null;
+      return { tournamentSlug: safeSlug, round: normalizedSelectedRound };
+    }
     const candidateId = baseBoards[0]?.boardId;
-    if (!candidateId) return null;
-    const parsed = parseBoardIdentifier(candidateId, tournamentSlug);
-    return { tournamentSlug: parsed.tournamentSlug, round: parsed.round };
-  }, [baseBoards, tournamentSlug, variant]);
-  const liveFeedVersion = useTournamentLiveFeed({
+    if (!candidateId) {
+      if (normalizedSelectedRound == null) return null;
+      return { tournamentSlug: safeSlug, round: normalizedSelectedRound };
+    }
+    const parsed = parseBoardIdentifier(candidateId, safeSlug);
+    return {
+      tournamentSlug: parsed.tournamentSlug,
+      round: normalizedSelectedRound ?? parsed.round,
+    };
+  }, [baseBoards, isTournamentVariant, normalizedSelectedRound, tournamentSlug]);
+  const { version: liveFeedVersion } = useTournamentLiveFeed({
     tournamentSlug: liveFeedConfig?.tournamentSlug ?? null,
     round: liveFeedConfig?.round ?? null,
     enabled: liveUpdatesEnabled,
@@ -536,7 +560,7 @@ export const BoardsNavigation = ({
       });
     })();
 
-    if (variant !== "tournament") {
+    if (!isTournamentVariant) {
       return baseResolvedBoards;
     }
 
@@ -591,7 +615,7 @@ export const BoardsNavigation = ({
         miniBoardExplicitStart: explicitStart,
       };
     });
-  }, [baseBoards, liveFeedConfig, liveFeedVersion, resolveDerivedFen, tournamentSlug, variant]);
+  }, [baseBoards, isTournamentVariant, liveFeedConfig, liveFeedVersion, resolveDerivedFen, tournamentSlug]);
   useEffect(() => {
     flushLatestFenCache();
   }, [resolvedBoards]);
@@ -621,18 +645,18 @@ export const BoardsNavigation = ({
 
   const gridCols = gridColsClassName ?? "grid-cols-2";
   const gridGaps = compact
-    ? variant === "tournament"
+    ? isTournamentVariant
       ? "gap-x-2.5 gap-y-2"
       : "gap-x-2 gap-y-1.5"
-    : variant === "tournament"
+    : isTournamentVariant
       ? "gap-x-2.5 gap-y-2"
       : "gap-x-3 gap-y-1";
   const gridWrapperPadding = compact
     ? "px-1 pb-0.5"
-    : variant === "tournament"
+    : isTournamentVariant
       ? "px-0 pb-1 pt-2"
       : "px-1.5 pb-1 sm:px-2";
-  const gridOverflowClass = variant === "tournament" ? "relative z-10 overflow-visible" : "overflow-x-hidden";
+  const gridOverflowClass = isTournamentVariant ? "relative z-10 overflow-visible" : "overflow-x-hidden";
   const resolvedSidebarBoards =
     sidebarBoards && liveFeedConfig
       ? sidebarBoards.map(entry => {
@@ -662,7 +686,7 @@ export const BoardsNavigation = ({
       : sidebarBoards ?? resolvedBoards;
   const autoEnableEnabled =
     miniBoardEvalFeatureEnabled &&
-    (variant === "default" || (tournamentSlug === "worldcup2025" && variant === "tournament"));
+    (variant === "default" || (tournamentSlug === "worldcup2025" && isTournamentVariant));
   const autoEnableCandidates = autoEnableEnabled ? resolvedBoards.slice(0, WARM_LITE_PREFETCH_COUNT) : [];
   const autoEnabledBoardIds = autoEnableCandidates.reduce<Record<string, true>>((acc, board) => {
     acc[board.boardId] = true;
@@ -1514,6 +1538,12 @@ export const BoardsNavigation = ({
         query.set("ts", String(Date.now()));
       }
       const url = `/api/tournament/live?${query.toString()}`;
+      if (navDebugEnabled) {
+        console.log("[broadcast-live] request", {
+          selectedRound: round,
+          requestUrl: url,
+        });
+      }
       const inflight = roundFetchInflightRef.current.get(inflightKey);
       if (inflight) return inflight;
       const getCachedBoardCount = () =>
@@ -1575,7 +1605,14 @@ export const BoardsNavigation = ({
           }
           if (navDebugEnabled) {
             const topKeys = payload ? Object.keys(payload) : [];
-            const boards = Array.isArray(payload?.boards) ? payload.boards : [];
+            const payloadWithAliases = payload as DgtLivePayload & {
+              games?: DgtBoardState[];
+              pairings?: DgtBoardState[];
+            };
+            const boards = (() => {
+              const normalized = payloadWithAliases?.boards ?? payloadWithAliases?.games ?? [];
+              return Array.isArray(normalized) ? normalized : [];
+            })();
             const boardsCount = boards.length;
             const sampleBoard = boards[0] ?? null;
             const sampleBoardKeys = sampleBoard ? Object.keys(sampleBoard) : [];
@@ -1595,9 +1632,17 @@ export const BoardsNavigation = ({
               console.log("NAV_LIVE_BOOTSTRAP_OK", { status: 200, boardsCount, hasFen, hasMoves, hasPgn });
             }
           }
-          if (!payload || !Array.isArray(payload.boards)) return {};
+          const payloadWithAliases = payload as DgtLivePayload & {
+            games?: DgtBoardState[];
+            pairings?: DgtBoardState[];
+          };
+          const boards = (() => {
+            const normalized = payloadWithAliases?.boards ?? payloadWithAliases?.games ?? [];
+            return Array.isArray(normalized) ? normalized : [];
+          })();
+          if (!payload || !Array.isArray(boards)) return {};
           const updates: Record<string, NavFetchedBoardState> = {};
-          payload.boards.forEach(boardState => {
+          boards.forEach(boardState => {
             if (!Number.isFinite(Number(boardState.board))) return;
             const boardId = buildBoardIdentifier(slug, round, Number(boardState.board));
             updates[boardId] = buildFetchedBoardState(boardId, boardState);
@@ -1716,12 +1761,23 @@ export const BoardsNavigation = ({
               fetchErrorMessage = debugError.message ?? "debug-error";
             }
             if (json && typeof json === "object") {
-              const payload = json as { board?: DgtBoardState | null; boards?: DgtBoardState[] | null };
+              const payload = json as {
+                board?: DgtBoardState | null;
+                boards?: DgtBoardState[] | null;
+                games?: DgtBoardState[] | null;
+                pairings?: DgtBoardState[] | null;
+              };
               if (payload.board) {
                 boardState = payload.board;
               } else if (Array.isArray(payload.boards)) {
                 boardState =
                   payload.boards.find(board => board?.board === parsed.board) ?? null;
+              } else if (Array.isArray(payload.games)) {
+                boardState =
+                  payload.games.find(board => board?.board === parsed.board) ?? null;
+              } else if (Array.isArray(payload.pairings)) {
+                boardState =
+                  payload.pairings.find(board => board?.board === parsed.board) ?? null;
               }
             }
             const hasFen = Boolean(boardState?.fen || boardState?.finalFen);
@@ -2994,7 +3050,7 @@ export const BoardsNavigation = ({
         </div>
       );
     };
-    const sidebarListPadding = variant === "tournament" ? "p-1.5" : "p-2";
+    const sidebarListPadding = isTournamentVariant ? "p-1.5" : "p-2";
     const rowHeightClass = "h-[var(--nav-row-h)]";
     const sidebarListBody = isEmpty ? (
       <div className="flex items-center justify-center px-2 pb-3 text-sm text-slate-400">
@@ -3023,7 +3079,7 @@ export const BoardsNavigation = ({
                   : null;
           const isFinished = board.status === "final" || Boolean(normalizedResult);
           const statusMode = isFinished ? "replay" : "live";
-          const resolvedMode = variant === "tournament" ? statusMode : mode ?? statusMode;
+          const resolvedMode = isTournamentVariant ? statusMode : mode ?? statusMode;
           const baseHref = buildViewerBoardPath(board.boardId, resolvedMode);
           const href = buildBoardHref ? buildBoardHref(board) : `${baseHref}${linkQuery}`;
           const isSelected = selectedBoardId === board.boardId;
@@ -3062,10 +3118,10 @@ export const BoardsNavigation = ({
               className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition ${rowHeightClass} ${rowClass}`}
             >
               <div className="flex h-7 items-center justify-center rounded-lg border border-white/10 bg-slate-950/70 px-2 text-[11px] font-semibold tabular-nums text-slate-200">
-                {variant === "tournament" ? `#${board.boardNumber}` : board.boardNumber}
+                {isTournamentVariant ? `#${board.boardNumber}` : board.boardNumber}
               </div>
               <div className="min-w-0 flex-1">
-                {variant === "tournament" ? (
+                {isTournamentVariant ? (
                   <div className="flex min-w-0 flex-col">
                     {renderPlayerRow(
                       board.white,
@@ -3101,7 +3157,7 @@ export const BoardsNavigation = ({
     );
     const sidebarList = (
       <div className={`rounded-2xl border border-white/10 bg-slate-950/70 ${sidebarListPadding}`}>
-        {variant === "tournament" ? null : (
+        {isTournamentVariant ? null : (
           <div className="px-2 pb-2 text-[11px] font-semibold text-slate-500">Pairings</div>
         )}
         {sidebarListBody}
@@ -3110,7 +3166,7 @@ export const BoardsNavigation = ({
 
     const sidebarOnlyPadding = compact
       ? "px-1 pb-0.5"
-      : variant === "tournament"
+      : isTournamentVariant
         ? "px-0 pb-1"
         : "px-1.5 pb-1 sm:px-2";
 
@@ -3181,7 +3237,7 @@ export const BoardsNavigation = ({
 
   return (
     <div className={`${gridWrapperPadding} ${gridOverflowClass}`}>
-      <div className={`grid ${gridCols} ${gridGaps} ${variant === "tournament" ? "overflow-visible" : "overflow-x-hidden"}`}>
+      <div className={`grid ${gridCols} ${gridGaps} ${isTournamentVariant ? "overflow-visible" : "overflow-x-hidden"}`}>
         {resolvedBoards.map(board => (
           <BoardsNavigationCard
             key={board.boardId}

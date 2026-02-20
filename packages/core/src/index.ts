@@ -15,3 +15,6 @@ export type { GameSummary } from './games';
 // Board theme
 export { BOARD_THEME } from './board-theme';
 
+// Player display
+export { formatPlayerDisplay } from './player-display';
+export type { PlayerDisplayInput } from './player-display';

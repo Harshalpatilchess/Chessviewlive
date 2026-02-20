@@ -10,6 +10,14 @@ export type BroadcastTournament = {
 
 export const BROADCASTS: BroadcastTournament[] = [
   {
+    slug: "worldcup2025",
+    title: "World Cup 2025",
+    sourceType: "lichessBroadcast",
+    lichessBroadcastId: "pYWxUzLr",
+    defaultRound: 1,
+    isLiveHint: true,
+  },
+  {
     slug: "armenian-championship-highest-league-2026",
     title: "Armenian Championship Highest League 2026",
     sourceType: "lichessBroadcast",
@@ -25,10 +33,23 @@ export const BROADCASTS: BroadcastTournament[] = [
     defaultRound: 1,
     isLiveHint: true,
   },
+  {
+    slug: "tata-steel-2026",
+    title: "Tata Steel Chess 2026 | Masters",
+    sourceType: "lichessBroadcast",
+    lichessBroadcastId: "3COxSfdj",
+    defaultRound: 1,
+    isLiveHint: false,
+  },
 ];
 
+const BROADCAST_SLUG_ALIASES: Record<string, string> = {
+  "tata-steel-masters-2026": "tata-steel-2026",
+};
+
 export const getBroadcastTournament = (value?: string | null) => {
-  const slug = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const rawSlug = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const slug = BROADCAST_SLUG_ALIASES[rawSlug] ?? rawSlug;
   if (!slug) return null;
   return BROADCASTS.find(entry => entry.slug === slug) ?? null;
 };

@@ -17,7 +17,7 @@ import type {
 import FavoriteToggleButton from "@/components/favorites/FavoriteToggleButton";
 import LiveHeaderControls from "@/components/viewer/LiveHeaderControls";
 import ViewerShell from "@/components/viewer/ViewerShell";
-import { DEFAULT_TOURNAMENT_SLUG, buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
+import { buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
 import { formatBoardContextLabel, formatBoardLabel } from "@/lib/boardContext";
 import { resolveTournamentName, type FavoriteGameEntry } from "@/lib/favoriteGames";
 import { WORLD_CUP_DEMO_PLIES, pliesFromPgn } from "@/lib/mockGames";
@@ -29,6 +29,7 @@ import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
 import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
 import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
 import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
+import { isPlaceholderPlayerName } from "@/lib/live/playerNormalization";
 import {
   getBoardPlayers,
   getTournamentBoardIds,
@@ -81,14 +82,21 @@ type LiveViewerProps = {
 type Orientation = "white" | "black";
 
 const DEFAULT_PLAYER_CLOCK = "01:23:45";
-const DEMO_WHITE_PLAYER = { name: "Magnus Carlsen", rating: 2830, country: "NOR", flag: "🇳🇴" };
-const DEMO_BLACK_PLAYER = { name: "Gukesh D", rating: 2750, country: "IND", flag: "🇮🇳" };
-const DEMO_TOURNAMENT_LABEL = "FIDE World Cup 2025";
+const OFFICIAL_SOURCE_UNAVAILABLE_LABEL = "Official source unavailable";
 
-const formatPlayerName = (name: string | null | undefined, fallback: string) => {
-  if (!name) return fallback;
-  const trimmed = name.trim();
-  return trimmed.length > 0 ? trimmed : fallback;
+const resolvePlayerDisplay = (primary?: string | null, fallback?: string | null) => {
+  const normalize = (value?: string | null) => {
+    const candidate = typeof value === "string" ? value.trim() : "";
+    if (!candidate || isPlaceholderPlayerName(candidate) || candidate.toLowerCase() === "unknown") {
+      return null;
+    }
+    return candidate;
+  };
+  const first = normalize(primary);
+  if (first) return { name: first, missingData: false };
+  const second = normalize(fallback);
+  if (second) return { name: second, missingData: false };
+  return { name: OFFICIAL_SOURCE_UNAVAILABLE_LABEL, missingData: true };
 };
 
 const normalizeManifestResult = (result?: GameResult | null): GameResult | null => {
@@ -170,50 +178,40 @@ export function LiveViewer({
   const [embedCopied, setEmbedCopied] = useState(false);
   const [subscribeGateOpen, setSubscribeGateOpen] = useState(false);
   const subscribeGateTimeoutRef = useRef<number | null>(null);
+  const boardSelection = useMemo(() => parseBoardIdentifier(boardId), [boardId]);
+  const activeTournamentSlug = boardSelection.tournamentSlug;
   const overlayLabel = useMemo(
-    () => formatBoardContextLabel(boardId, tournamentId),
-    [boardId, tournamentId]
+    () => formatBoardContextLabel(boardId, activeTournamentSlug),
+    [activeTournamentSlug, boardId]
   );
   const boardPlayers = useMemo(() => {
-    if (!tournamentId) return null;
-    const players = getBoardPlayers(tournamentId, boardId);
+    const players = getBoardPlayers(activeTournamentSlug, boardId);
     if (!players.white && !players.black) return null;
     return players;
-  }, [tournamentId, boardId]);
+  }, [activeTournamentSlug, boardId]);
   const whiteClockLabel = DEFAULT_PLAYER_CLOCK;
   const blackClockLabel = DEFAULT_PLAYER_CLOCK;
-  const tournamentLabel = useMemo(() => {
-    const trimmed = tournamentId?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : null;
-  }, [tournamentId]);
+  const tournamentLabel = useMemo(() => resolveTournamentName(activeTournamentSlug), [activeTournamentSlug]);
   const tournamentHref = useMemo(() => {
-    if (!tournamentLabel) return null;
-    return `/t/${encodeURIComponent(tournamentLabel)}`;
-  }, [tournamentLabel]);
+    return `/broadcast/${encodeURIComponent(activeTournamentSlug)}`;
+  }, [activeTournamentSlug]);
   const isHealthyLive = status === "connected" && isLive;
   const canonicalPath = useMemo(
-    () => buildBroadcastBoardPath(boardId, "live", tournamentId),
-    [boardId, tournamentId]
+    () => buildBroadcastBoardPath(boardId, "live", activeTournamentSlug),
+    [activeTournamentSlug, boardId]
   );
   const replayPath = useMemo(
-    () => buildBroadcastBoardPath(boardId, "replay", tournamentId),
-    [boardId, tournamentId]
+    () => buildBroadcastBoardPath(boardId, "replay", activeTournamentSlug),
+    [activeTournamentSlug, boardId]
   );
   const latestReplayPath = useMemo(() => {
     if (!replayPath) return null;
     return `${replayPath}?latest=1`;
   }, [replayPath]);
-  const replayOverlayHref = latestReplayPath ?? replayPath ?? buildBroadcastBoardPath(boardId, "replay", tournamentId);
-  const fallbackSlug = useMemo(() => {
-    const trimmed = tournamentId?.trim().toLowerCase();
-    return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TOURNAMENT_SLUG;
-  }, [tournamentId]);
-  const boardSelection = useMemo(
-    () => parseBoardIdentifier(boardId, fallbackSlug),
-    [boardId, fallbackSlug]
-  );
-  const liveFeedVersion = useTournamentLiveFeed({
-    tournamentSlug: boardSelection.tournamentSlug,
+  const replayOverlayHref =
+    latestReplayPath ?? replayPath ?? buildBroadcastBoardPath(boardId, "replay", activeTournamentSlug);
+  const { version: liveFeedVersion, hasFetchedOnce: liveFeedHasFetchedOnce } = useTournamentLiveFeed({
+    tournamentSlug: activeTournamentSlug,
     round: boardSelection.round,
     enabled: liveUpdatesEnabled,
     intervalMs: liveUpdatesIntervalMs,
@@ -221,26 +219,56 @@ export function LiveViewer({
   const boardManifestGame = useMemo(
     () =>
       getTournamentGameManifest(
-        boardSelection.tournamentSlug,
+        activeTournamentSlug,
         boardSelection.round,
         boardSelection.board
       ),
-    [boardSelection.tournamentSlug, boardSelection.round, boardSelection.board, liveFeedVersion]
+    [activeTournamentSlug, boardSelection.round, boardSelection.board, liveFeedVersion]
   );
-  const manifestWhiteName = boardManifestGame?.white ?? DEMO_WHITE_PLAYER.name;
-  const manifestBlackName = boardManifestGame?.black ?? DEMO_BLACK_PLAYER.name;
-  const whitePlayerName = formatPlayerName(boardPlayers?.white, manifestWhiteName);
-  const blackPlayerName = formatPlayerName(boardPlayers?.black, manifestBlackName);
+  const whitePlayer = resolvePlayerDisplay(boardManifestGame?.white ?? null, boardPlayers?.white);
+  const blackPlayer = resolvePlayerDisplay(boardManifestGame?.black ?? null, boardPlayers?.black);
   const whiteTitle = boardManifestGame?.whiteTitle ?? null;
   const blackTitle = boardManifestGame?.blackTitle ?? null;
-  const whiteFlag = boardManifestGame?.whiteFlag ?? DEMO_WHITE_PLAYER.flag;
-  const blackFlag = boardManifestGame?.blackFlag ?? DEMO_BLACK_PLAYER.flag;
-  const whiteRating = boardManifestGame?.whiteRating ?? DEMO_WHITE_PLAYER.rating;
-  const blackRating = boardManifestGame?.blackRating ?? DEMO_BLACK_PLAYER.rating;
-  const whiteCountryCode = boardManifestGame?.whiteCountry ?? DEMO_WHITE_PLAYER.country;
-  const blackCountryCode = boardManifestGame?.blackCountry ?? DEMO_BLACK_PLAYER.country;
-  const whiteDisplayName = whitePlayerName;
-  const blackDisplayName = blackPlayerName;
+  const whiteFlag = boardManifestGame?.whiteFlag?.trim() || boardManifestGame?.whiteCountry?.trim() || null;
+  const blackFlag = boardManifestGame?.blackFlag?.trim() || boardManifestGame?.blackCountry?.trim() || null;
+  const whiteRating =
+    Number.isFinite(Number(boardManifestGame?.whiteRating ?? NaN)) && Number(boardManifestGame?.whiteRating) > 0
+      ? Math.trunc(Number(boardManifestGame?.whiteRating))
+      : null;
+  const blackRating =
+    Number.isFinite(Number(boardManifestGame?.blackRating ?? NaN)) && Number(boardManifestGame?.blackRating) > 0
+      ? Math.trunc(Number(boardManifestGame?.blackRating))
+      : null;
+  const whiteCountryCode = boardManifestGame?.whiteCountry?.trim() || null;
+  const blackCountryCode = boardManifestGame?.blackCountry?.trim() || null;
+  const whiteDisplayName = whitePlayer.name;
+  const blackDisplayName = blackPlayer.name;
+  const manifestWhiteName =
+    typeof boardManifestGame?.white === "string" && boardManifestGame.white.trim().length > 0
+      ? boardManifestGame.white.trim()
+      : null;
+  const manifestBlackName =
+    typeof boardManifestGame?.black === "string" && boardManifestGame.black.trim().length > 0
+      ? boardManifestGame.black.trim()
+      : null;
+  const hasManifestWhiteName =
+    manifestWhiteName != null &&
+    !isPlaceholderPlayerName(manifestWhiteName) &&
+    manifestWhiteName.toLowerCase() !== "unknown";
+  const hasManifestBlackName =
+    manifestBlackName != null &&
+    !isPlaceholderPlayerName(manifestBlackName) &&
+    manifestBlackName.toLowerCase() !== "unknown";
+  const whiteNameSource =
+    boardManifestGame?.whiteNameSource ?? (hasManifestWhiteName ? "manifest" : whitePlayer.missingData ? "unknown" : "direct");
+  const blackNameSource =
+    boardManifestGame?.blackNameSource ?? (hasManifestBlackName ? "manifest" : blackPlayer.missingData ? "unknown" : "direct");
+  const whiteMissingData = whiteNameSource === "unknown";
+  const blackMissingData = blackNameSource === "unknown";
+  const whiteMissingReason =
+    boardManifestGame?.whiteMissingReason ?? (whiteMissingData ? "missing white name field" : null);
+  const blackMissingReason =
+    boardManifestGame?.blackMissingReason ?? (blackMissingData ? "missing black name field" : null);
   const boardResult = normalizeManifestResult(boardManifestGame?.result ?? null);
   const boardStatus: GameStatus | null = boardManifestGame?.status ?? null;
   const boardNumber = boardSelection.board;
@@ -280,15 +308,14 @@ export function LiveViewer({
     return buildBroadcastBoardPath(nextBoardId, "live", boardSelection.tournamentSlug);
   }, [boardSelection]);
   const tournamentBoardIds = useMemo(() => {
-    if (!tournamentId) return null;
-    return getTournamentBoardIds(tournamentId);
-  }, [tournamentId]);
+    return getTournamentBoardIds(activeTournamentSlug);
+  }, [activeTournamentSlug]);
   const boardSwitcherOptions = useMemo(() => {
-    if (!tournamentId || !tournamentBoardIds || tournamentBoardIds.length < 2) return null;
+    if (!tournamentBoardIds || tournamentBoardIds.length < 2) return null;
     return tournamentBoardIds.map(id => {
       const trimmed = id.trim();
-      const paths = buildBoardPaths(trimmed, tournamentId);
-      const players = getBoardPlayers(tournamentId, trimmed);
+      const paths = buildBoardPaths(trimmed, activeTournamentSlug);
+      const players = getBoardPlayers(activeTournamentSlug, trimmed);
       return {
         boardId: trimmed,
         label: formatBoardLabel(trimmed),
@@ -296,13 +323,7 @@ export function LiveViewer({
         players,
       };
     });
-  }, [tournamentId, tournamentBoardIds]);
-  const isTournamentBoardConfigured = useMemo(() => {
-    if (!tournamentId) return true;
-    if (!tournamentBoardIds || tournamentBoardIds.length === 0) return false;
-    const normalized = boardId.trim().toLowerCase();
-    return tournamentBoardIds.some(id => id.trim().toLowerCase() === normalized);
-  }, [tournamentBoardIds, tournamentId, boardId]);
+  }, [activeTournamentSlug, tournamentBoardIds]);
   const currentBoardLabel = useMemo(() => formatBoardLabel(boardId), [boardId]);
   const videoRoomLabel = overlayLabel ?? currentBoardLabel;
   const plies = useMemo(() => {
@@ -310,7 +331,7 @@ export function LiveViewer({
     if (Array.isArray(moveList) && moveList.length > 0) {
       return movesToPlies(moveList);
     }
-    if (boardSelection.tournamentSlug === "worldcup2025" && boardSelection.round === 1) {
+    if (activeTournamentSlug === "worldcup2025" && boardSelection.round === 1) {
       const pgn = getWorldCupPgnForBoard(boardSelection.board);
       const parsed = pliesFromPgn(pgn);
       if (parsed.length) {
@@ -328,7 +349,7 @@ export function LiveViewer({
     boardManifestGame?.moveList,
     boardSelection.board,
     boardSelection.round,
-    boardSelection.tournamentSlug,
+    activeTournamentSlug,
   ]);
   const [currentMoveIndex, setCurrentMoveIndex] = useState(() =>
     plies.length ? plies.length - 1 : -1
@@ -377,7 +398,7 @@ export function LiveViewer({
     onPieceDrop: handlePieceDrop,
   } = useBoardAnalysis({
     boardId,
-    tournamentId,
+    tournamentId: activeTournamentSlug,
     plies,
     currentMoveIndex,
     officialFen: boardPosition,
@@ -469,7 +490,7 @@ export function LiveViewer({
   useEffect(() => {
     console.log("[LiveBoard] orientation", orientation);
   }, [orientation]);
-  const displayGameLabel = DEMO_TOURNAMENT_LABEL;
+  const displayGameLabel = resolveTournamentName(activeTournamentSlug);
   const embedCopiedTimeoutRef = useRef<number | null>(null);
   const lowBandwidthKey = `cv:lowbw:live:${boardId}`;
   const [manualLowBandwidth, setManualLowBandwidth] = useState<boolean>(false);
@@ -830,10 +851,6 @@ export function LiveViewer({
   );
 
   useEffect(() => {
-    if (tournamentId && !isTournamentBoardConfigured) {
-      setStatus("idle");
-      return;
-    }
     stoppedRef.current = false;
     manualDisconnectRef.current = false;
 
@@ -1209,8 +1226,6 @@ export function LiveViewer({
     stopDownlinkStats,
     clearLowBandwidthTimers,
     applyLowBandwidth,
-    tournamentId,
-    isTournamentBoardConfigured,
     allowStatsOverlay,
   ]);
 
@@ -1656,41 +1671,6 @@ export function LiveViewer({
     blackDisplayName,
   ]);
 
-  if (tournamentId && !isTournamentBoardConfigured) {
-    return (
-      <main className={mainClassName}>
-        <div className="rounded-xl border border-dashed border-neutral-300 bg-white p-6 text-sm text-neutral-700 space-y-3">
-          <h1 className="text-lg font-semibold text-neutral-900">This board is not configured for this tournament.</h1>
-          <p>Please check your tournament board settings or pick another board below.</p>
-          {tournamentHref && (
-            <Link
-              href={tournamentHref}
-              className="inline-flex items-center gap-1 rounded border border-blue-200 px-3 py-1 text-blue-700 transition hover:bg-blue-50"
-            >
-              ← Go to all boards in this tournament
-            </Link>
-          )}
-          {boardSwitcherOptions && (
-            <div className="space-y-1">
-              <div className="text-xs uppercase tracking-wide text-neutral-500">Available boards</div>
-              <div className="flex flex-wrap gap-2">
-                {boardSwitcherOptions.map(option => (
-                  <Link
-                    key={option.boardId}
-                    href={option.href}
-                    className="rounded border border-neutral-200 px-3 py-1 text-xs font-semibold text-neutral-700 transition hover:bg-neutral-100"
-                  >
-                    Watch {option.label}
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-    );
-  }
-
   const videoOverlay =
     showReplayOverlay && replayOverlayHref ? (
       <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -1705,8 +1685,17 @@ export function LiveViewer({
       </div>
     ) : null;
 
+  const showOfficialSourceUnavailableBanner =
+    liveFeedHasFetchedOnce && (!boardManifestGame || whitePlayer.missingData || blackPlayer.missingData);
+  const officialSourceUnavailableBanner = showOfficialSourceUnavailableBanner ? (
+    <div className="rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2 text-sm font-semibold text-slate-200">
+      Official source unavailable
+    </div>
+  ) : null;
+
   const videoFooter = shouldShowManualRetry ? (
     <>
+      {officialSourceUnavailableBanner}
       <div className="mt-1.5 flex items-center gap-2 text-xs text-neutral-500">
         <span>Having trouble?</span>
         <button
@@ -1722,7 +1711,7 @@ export function LiveViewer({
         <div className="mt-0.5 text-xs text-neutral-500">Retry in progress…</div>
       ) : null}
     </>
-  ) : null;
+  ) : officialSourceUnavailableBanner;
 
   const statsOverlay = allowStatsOverlay ? (
     <div className="fixed bottom-2 left-2 bg-black/70 text-white text-[10px] font-mono px-2 py-1 rounded pointer-events-none select-none opacity-70">
@@ -1808,6 +1797,9 @@ export function LiveViewer({
             countryCode: whiteCountryCode,
             flag: whiteFlag,
             title: whiteTitle,
+            nameSource: whiteNameSource,
+            missingReason: whiteMissingReason,
+            missingData: whiteMissingData,
             clockLabel: whiteClockLabel,
           },
           black: {
@@ -1816,6 +1808,9 @@ export function LiveViewer({
             countryCode: blackCountryCode,
             flag: blackFlag,
             title: blackTitle,
+            nameSource: blackNameSource,
+            missingReason: blackMissingReason,
+            missingData: blackMissingData,
             clockLabel: blackClockLabel,
           },
         }}

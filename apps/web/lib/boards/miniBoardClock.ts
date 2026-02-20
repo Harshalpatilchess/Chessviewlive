@@ -17,6 +17,7 @@ export const normalizeClockValueToMs = (
 export const formatMiniBoardClockMs = (value?: number | null): string => {
   if (!Number.isFinite(value ?? NaN)) return MINI_BOARD_CLOCK_PLACEHOLDER;
   const totalSeconds = Math.max(0, Math.floor(Number(value) / 1000));
+  if (totalSeconds === 0) return "0:00";
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;

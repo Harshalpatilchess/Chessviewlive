@@ -20,8 +20,8 @@ type LatestClockStoragePayload = {
   }>;
 };
 
-const STORAGE_KEY = "cv-mini-latest-clock:v2";
-const STORAGE_VERSION = 2;
+const STORAGE_KEY = "cv-mini-latest-clock:v3";
+const STORAGE_VERSION = 3;
 const STORAGE_MAX_ENTRIES = 400;
 
 const LATEST_CLOCK_CACHE = new Map<string, LatestClockEntry>();

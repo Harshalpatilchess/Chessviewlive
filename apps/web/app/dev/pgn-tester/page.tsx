@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
 import { samplePgns } from "@/lib/live/samplePgns";
 import { pgnToDgtBoard } from "@/lib/live/pgnToDgtPayload";
+import { readPlayerNameFromBoardSide } from "@/lib/live/playerNormalization";
 import { Chess } from "chess.js";
 
 export default function PgnTesterPage() {
@@ -29,6 +30,8 @@ export default function PgnTesterPage() {
   const hasFen = Boolean(parsed.finalFen);
   const movePreview =
     parsed.moveList && parsed.moveList.length ? parsed.moveList.slice(0, 6).join(" ") : "No moves parsed";
+  const whiteName = readPlayerNameFromBoardSide(parsed.white) ?? "—";
+  const blackName = readPlayerNameFromBoardSide(parsed.black) ?? "—";
 
   return (
     <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-4 px-4 py-6 text-slate-100">
@@ -63,11 +66,11 @@ export default function PgnTesterPage() {
             </div>
             <div>
               <div className="text-slate-400">White</div>
-              <div className="font-semibold text-white">{parsed.white ?? "—"}</div>
+              <div className="font-semibold text-white">{whiteName}</div>
             </div>
             <div>
               <div className="text-slate-400">Black</div>
-              <div className="font-semibold text-white">{parsed.black ?? "—"}</div>
+              <div className="font-semibold text-white">{blackName}</div>
             </div>
             <div>
               <div className="text-slate-400">White Elo</div>

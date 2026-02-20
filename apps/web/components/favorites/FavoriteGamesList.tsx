@@ -38,8 +38,8 @@ const buildSampleEntry = (board: number, mode: "live" | "replay"): FavoriteGameE
     roundLabel: `Round ${SAMPLE_ROUND}`,
     boardId,
     boardLabel: `Board ${SAMPLE_ROUND}.${board}`,
-    whitePlayer: game?.white?.trim() || "White player",
-    blackPlayer: game?.black?.trim() || "Black player",
+    whitePlayer: game?.white?.trim() || "Official source unavailable",
+    blackPlayer: game?.black?.trim() || "Official source unavailable",
     fen,
     mode,
     updatedAt: Date.now(),
@@ -72,8 +72,8 @@ export default function FavoriteGamesList() {
           status: entry.mode === "replay" ? "final" : "live",
           previewFen,
           miniEvalCp: previewFen ? getMiniEvalCp(previewFen) : null,
-          white: { name: entry.whitePlayer ?? "White player" },
-          black: { name: entry.blackPlayer ?? "Black player" },
+          white: { name: entry.whitePlayer ?? "Official source unavailable" },
+          black: { name: entry.blackPlayer ?? "Official source unavailable" },
         };
       }),
     [favorites]

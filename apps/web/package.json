@@ -13,6 +13,7 @@
     "aws-sdk": "2.1692.0",
     "chess.js": "^1.4.0",
     "chessground": "^9.2.1",
+    "fflate": "^0.8.2",
     "livekit-client": "2.15.8",
     "livekit-server-sdk": "2.14.0",
     "lucide-react": "0.544.0",

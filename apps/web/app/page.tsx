@@ -128,6 +128,11 @@ const normalizeFilter = (value?: string): "all" | "current" | "past" | "top" => 
 const normalizeTournamentName = (value: string) =>
   value.replace(/[—–]/g, " ").replace(/\s+/g, " ").trim();
 
+const HOMEPAGE_TOURNAMENT_ALLOWLIST = new Set<string>([
+  normalizeTournamentSlug(DEFAULT_TOURNAMENT_SLUG, DEFAULT_TOURNAMENT_SLUG),
+  normalizeTournamentSlug("tata-steel-2026", "tata-steel-2026"),
+]);
+
 const formatStartDate = (iso: string) => {
   const date = new Date(iso);
   if (!Number.isFinite(date.getTime())) return null;
@@ -178,8 +183,15 @@ export default async function Home({ searchParams }: HomeProps) {
   const query = queryParam?.trim().toLowerCase() ?? "";
   const discoveryResponse = await fetchDiscoveryLive();
   const discoveryItems = discoveryResponse?.items ?? [];
+  const allowedDiscoveryItems = discoveryItems.filter(item => {
+    const normalizedSlug = normalizeTournamentSlug(item.tournament.slug, item.tournament.slug);
+    return HOMEPAGE_TOURNAMENT_ALLOWLIST.has(normalizedSlug);
+  });
 
-  const summaries = TOURNAMENTS.map(tournament => {
+  const summaries = TOURNAMENTS.filter(tournament => {
+    const normalizedSlug = normalizeTournamentSlug(tournament.slug, tournament.slug);
+    return HOMEPAGE_TOURNAMENT_ALLOWLIST.has(normalizedSlug);
+  }).map(tournament => {
     const boards = getTournamentBoardsForRound(tournament.slug, tournament.round) ?? [];
     const games = boards
       .map(board => getTournamentGameManifest(tournament.slug, tournament.round, board))
@@ -206,7 +218,7 @@ export default async function Home({ searchParams }: HomeProps) {
   );
 
   const discoveryBySlug = new Map<string, DiscoveryItem>();
-  discoveryItems.forEach(item => {
+  allowedDiscoveryItems.forEach(item => {
     const normalizedSlug = normalizeTournamentSlug(item.tournament.slug, item.tournament.slug);
     if (!discoveryBySlug.has(normalizedSlug)) {
       discoveryBySlug.set(normalizedSlug, item);
@@ -441,8 +453,6 @@ export default async function Home({ searchParams }: HomeProps) {
                   featuredSelection?.mode === "replay" ? (
                     <ReplayBoardPage
                       params={Promise.resolve(featuredViewerParams)}
-                      viewerDensity="compact"
-                      viewerVariant="mini"
                       liveUpdatesEnabled={false}
                     />
                   ) : (

@@ -1,4 +1,17 @@
-import FavoriteGamesList from "@/components/favorites/FavoriteGamesList";
+"use client";
+
+import nextDynamic from "next/dynamic";
+
+export const dynamic = "force-dynamic";
+
+const FavoriteGamesList = nextDynamic(() => import("@/components/favorites/FavoriteGamesList"), {
+  ssr: false,
+  loading: () => (
+    <p className="text-sm text-slate-300" role="status">
+      Loading favorites...
+    </p>
+  ),
+});
 
 export default function FavoritesPage() {
   return (

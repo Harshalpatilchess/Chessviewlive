@@ -2,9 +2,16 @@ import type { GameResult, GameStatus } from "@/lib/tournamentManifest";
 
 export type BoardNavigationPlayer = {
   name: string;
+  firstName?: string;
+  lastName?: string;
   title?: string | null;
   rating?: number;
   flag?: string;
+  country?: string;
+  federation?: string;
+  nameSource?: string;
+  missingData?: boolean;
+  missingReason?: string;
 };
 
 export type BoardNavigationEntry = {

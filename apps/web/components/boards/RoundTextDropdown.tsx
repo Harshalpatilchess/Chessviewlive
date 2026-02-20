@@ -11,11 +11,14 @@ export type RoundMenuItem = {
   dateLabel?: string | null;
   statusLabel?: string | null;
   statusTone?: "finished" | "live" | "notStarted" | null;
+  roundId?: string | null;
 };
 
 type RoundTextDropdownProps = {
   items: RoundMenuItem[];
   activeRound: number;
+  tournamentSlug: string;
+  prefetchOfficialRounds?: boolean;
 };
 
 const getStatusCapsuleClass = (tone?: RoundMenuItem["statusTone"] | null) => {
@@ -31,26 +34,42 @@ const getStatusCapsuleClass = (tone?: RoundMenuItem["statusTone"] | null) => {
   return "border-white/10 bg-white/5 text-slate-300";
 };
 
-export default function RoundTextDropdown({ items, activeRound }: RoundTextDropdownProps) {
+export default function RoundTextDropdown({
+  items,
+  activeRound,
+  tournamentSlug,
+  prefetchOfficialRounds = false,
+}: RoundTextDropdownProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const prefetchedRoundsRef = useRef(new Set<string>());
   const [isOpen, setIsOpen] = useState(false);
+  const [optimisticRound, setOptimisticRound] = useState<number | null>(null);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const hasMultipleRounds = items.length > 1;
-  const activeItem = useMemo(() => items.find(item => item.value === activeRound) ?? null, [activeRound, items]);
-  const activeLabel = activeItem?.label ?? `Round ${activeRound}`;
+  const displayedRound = optimisticRound ?? activeRound;
+  const activeItem = useMemo(
+    () => items.find(item => item.value === displayedRound) ?? null,
+    [displayedRound, items]
+  );
+  const activeLabel = activeItem?.label ?? `Round ${displayedRound}`;
   const activeStatusLabel = activeItem?.statusLabel ?? "Not started";
   const activeStatusTone = activeItem?.statusTone ?? "notStarted";
 
   const updateRoundParam = useCallback(
-    (nextRound: number) => {
+    (nextRound: number, roundId?: string | null) => {
       if (!Number.isFinite(nextRound)) return;
       const params = new URLSearchParams(searchParams.toString());
       params.set("round", String(nextRound));
+      if (roundId && roundId.trim()) {
+        params.set("roundId", roundId.trim());
+      } else {
+        params.delete("roundId");
+      }
       params.set("page", "1");
       const query = params.toString();
       router.push(query ? `${pathname}?${query}` : pathname, { scroll: false });
@@ -101,8 +120,43 @@ export default function RoundTextDropdown({ items, activeRound }: RoundTextDropd
   }, [isOpen, updateMenuPosition]);
 
   useEffect(() => {
+    setOptimisticRound(prev => (prev === activeRound ? null : prev));
     setIsOpen(false);
   }, [activeRound]);
+
+  useEffect(() => {
+    if (!prefetchOfficialRounds) return;
+    if (!tournamentSlug.trim()) return;
+    if (items.length === 0) return;
+    if (!items.every(item => item.statusTone === "finished")) return;
+    const roundsToPrefetch = items.filter(
+      item =>
+        Number.isFinite(item.value) &&
+        typeof item.roundId === "string" &&
+        item.roundId.trim().length > 0 &&
+        !prefetchedRoundsRef.current.has(`${tournamentSlug}:${item.value}:${item.roundId.trim()}`)
+    );
+    if (roundsToPrefetch.length === 0) return;
+    const debugEnabled =
+      typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "1";
+    const abortController = new AbortController();
+    roundsToPrefetch.forEach(item => {
+      const roundId = item.roundId?.trim();
+      if (!roundId) return;
+      prefetchedRoundsRef.current.add(`${tournamentSlug}:${item.value}:${roundId}`);
+      const params = new URLSearchParams({
+        slug: tournamentSlug,
+        round: String(item.value),
+        roundId,
+      });
+      if (debugEnabled) params.set("debug", "1");
+      void fetch(`/api/tournament/official?${params.toString()}`, {
+        cache: "no-store",
+        signal: abortController.signal,
+      }).catch(() => null);
+    });
+    return () => abortController.abort();
+  }, [items, prefetchOfficialRounds, tournamentSlug]);
 
   const menuContent =
     isOpen && typeof document !== "undefined" && menuPosition
@@ -121,24 +175,27 @@ export default function RoundTextDropdown({ items, activeRound }: RoundTextDropd
           >
             <ul role="menu" aria-label="Select round">
               {items.map(item => {
-                const isActive = item.value === activeRound;
+                const isActive = item.value === displayedRound;
                 return (
                   <li key={item.value}>
                     <button
                       type="button"
-                      className={`grid w-full grid-cols-[1.2fr_1fr_auto] items-center gap-2 rounded-xl px-2.5 py-2 text-left transition ${
+                      className={`grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 rounded-xl px-2.5 py-2 text-left transition ${
                         isActive
                           ? "bg-slate-800/80 text-white"
                           : "text-slate-300 hover:bg-slate-800/60 hover:text-white"
                       }`}
                       onClick={() => {
-                        updateRoundParam(item.value);
+                        setOptimisticRound(item.value);
+                        updateRoundParam(item.value, item.roundId ?? null);
                         setIsOpen(false);
                       }}
                       role="menuitem"
                     >
                       <span className="text-[12px] font-semibold text-slate-50">{item.label}</span>
-                      <span className="text-[11px] text-slate-400">{item.dateLabel ?? "—"}</span>
+                      <span className="whitespace-nowrap text-left text-[11px] text-slate-400">
+                        {item.dateLabel ?? "—"}
+                      </span>
                       <span className="flex items-center justify-end gap-1.5">
                         {isActive ? <span className="text-[10px] text-slate-400">✓</span> : null}
                         <span className="text-[10px] font-semibold text-slate-200">

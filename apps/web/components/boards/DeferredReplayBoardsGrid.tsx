@@ -388,7 +388,7 @@ export default function DeferredReplayBoardsGrid({
       const cacheEntry = cache[boardId];
       const endpointMoves = resolvedMoves[boardId] ?? null;
       const endpointReason = resolveReasons[boardId] ?? null;
-      const resolution = cacheEntry
+      const resolution: ReplayFenResolution = cacheEntry
         ? {
             fen: cacheEntry.fen,
             explicitZeroMoves: cacheEntry.explicitZeroMoves,
@@ -614,7 +614,7 @@ export default function DeferredReplayBoardsGrid({
                 layout="grid"
                 variant="tournament"
                 gridColsClassName={GRID_COLS}
-                tournamentSlug={mode === "replay" ? undefined : tournamentSlug}
+                tournamentSlug={tournamentSlug}
                 selectedBoardId={selectedBoardId}
                 liveUpdatesEnabled={false}
                 buildBoardHref={buildBoardHref}

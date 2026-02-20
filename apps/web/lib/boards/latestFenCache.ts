@@ -24,8 +24,9 @@ type LatestFenStoragePayload = {
 };
 
 const START_FEN = new Chess().fen();
-const STORAGE_KEY = "cv-mini-latest-fen:v1";
-const STORAGE_VERSION = 1;
+const TILE_KEY_PREFIX = "v2";
+const STORAGE_KEY = "cv-mini-latest-fen:v2";
+const STORAGE_VERSION = 2;
 const STORAGE_MAX_ENTRIES = 400;
 
 const LATEST_FEN_CACHE = new Map<string, LatestFenEntry>();
@@ -70,12 +71,12 @@ export const getStartFen = () => START_FEN;
 
 export const buildTileKey = (input: LatestFenKeyInput): string | null => {
   const boardId = normalizeBoardId(input.boardId);
-  if (boardId) return boardId;
+  if (boardId) return `${TILE_KEY_PREFIX}:${boardId}`;
   const slug = normalizeTournamentSlug(input.tournamentSlug);
   const round = normalizeRound(input.round);
   const boardNumber = normalizeBoardNumber(input.boardNumber);
   if (!slug || round == null || boardNumber == null) return null;
-  return `${slug}-board${round}.${boardNumber}`;
+  return `${TILE_KEY_PREFIX}:${slug}-board${round}.${boardNumber}`;
 };
 
 const pruneCache = () => {

@@ -354,6 +354,10 @@ const RightPaneTabs = ({
   }, [resolvedPane]);
   const notationScrollRef = useRef<HTMLDivElement | null>(null);
   const boardsData = boardNavigation ?? [];
+  const activeTournamentSlug = useMemo(() => {
+    if (!currentBoardId) return undefined;
+    return normalizeBoardIdentifier(currentBoardId).parsed.tournamentSlug;
+  }, [currentBoardId]);
   const debugEngineSwitcherEnabled = DEBUG_ENGINE_SWITCHER && typeof setEngineBackend === "function";
   const prevAnalysisActiveRef = useRef(Boolean(analysisViewActive));
   const [analysisContextMenu, setAnalysisContextMenu] = useState<AnalysisContextMenuState | null>(null);
@@ -927,6 +931,8 @@ const RightPaneTabs = ({
                 currentBoardId={currentBoardId}
                 paneQuery={activeTab}
                 compact={boardsCompactMode || isCompact}
+                variant="tournament"
+                tournamentSlug={activeTournamentSlug}
                 viewerEvalBars={mode === "live" || mode === "replay"}
                 onBoardClick={onBoardSelect}
               />

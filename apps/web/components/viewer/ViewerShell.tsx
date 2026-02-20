@@ -9,9 +9,10 @@ import MainEvalBar from "@/components/live/MainEvalBar";
 import RightPaneTabs from "@/components/live/RightPaneTabs";
 import type { BoardSwitcherOption } from "@/components/tournament/BoardSwitcher";
 import AnimatedBoardPane from "@/components/viewer/AnimatedBoardPane";
+import BroadcastIdentityBar from "@/components/viewer/BroadcastIdentityBar";
 import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
 import DeferredReplayBoardsGrid from "@/components/boards/DeferredReplayBoardsGrid";
-import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
+import type { BoardNavigationEntry, BoardNavigationPlayer } from "@/lib/boards/navigationTypes";
 import {
   flushLatestClockCache,
   isReplayClockSource,
@@ -22,6 +23,8 @@ import {
 import type { Ply } from "@/lib/chess/pgn";
 import { buildBoardIdentifier, normalizeBoardIdentifier } from "@/lib/boardId";
 import { getBroadcastTournament } from "@/lib/broadcasts/catalog";
+import { isTimeTrouble } from "@/lib/live/clockFormat";
+import { isPlaceholderPlayerName } from "@/lib/live/playerNormalization";
 import { getTournamentBoardsForRound, getTournamentGameManifest } from "@/lib/tournamentManifest";
 import type { GameResult, GameStatus } from "@/lib/tournamentManifest";
 import type { StockfishEval, StockfishLine } from "@/lib/engine/useStockfishEvaluation";
@@ -34,10 +37,13 @@ type ScoreVariant = "winner" | "loser" | "draw" | "neutral";
 
 type PlayerCardProps = {
   name: string;
-  rating: number | string;
-  countryCode: string;
-  flag: string;
+  rating?: number | string | null;
+  countryCode?: string | null;
+  flag?: string | null;
   title?: string | null;
+  nameSource?: string | null;
+  missingReason?: string | null;
+  missingData?: boolean;
   clockLabel: string;
   clockMs?: number | null;
   clockIncrementMs?: number | null;
@@ -121,77 +127,18 @@ const derivePlayerPoints = (
   };
 };
 
-const scorePillClasses = (variant: ScoreVariant) => {
-  void variant; // variant preserved for potential future use
-  return "border-slate-600 bg-slate-900 text-slate-200";
-};
-
 const normalizeFen = (value?: string | null): string | null => {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const COMPACT_NAME_MAX = 18;
-const DEFAULT_NAME_MAX = 24;
+const OFFICIAL_SOURCE_UNAVAILABLE_LABEL = "Official source unavailable";
 const CLOCK_LOW_SECONDS = 120;
-const CLOCK_CRITICAL_SECONDS = 30;
 
-const formatPlayerDisplayName = (name: string, maxLength: number) => {
-  const cleaned = name.trim().replace(/\s+/g, " ");
-  if (!cleaned) {
-    return { label: name, shouldTruncate: false };
-  }
-  if (cleaned.length <= maxLength) {
-    return { label: cleaned, shouldTruncate: false };
-  }
-
-  const parts = cleaned.split(" ");
-  if (parts.length < 2) {
-    return { label: cleaned, shouldTruncate: true };
-  }
-
-  const first = parts[0];
-  const last = parts[parts.length - 1];
-  const second = parts[1];
-
-  const initialFrom = (value: string) => {
-    const letters = value.replace(/[^A-Za-z]/g, "");
-    const base = letters.length > 0 ? letters[0] : value[0] ?? "";
-    return base ? `${base}.` : "";
-  };
-
-  const candidates: string[] = [];
-  const middleLetters = second.replace(/[^A-Za-z]/g, "");
-  if (parts.length > 2 && middleLetters.length === 1) {
-    const middleInitial = initialFrom(second);
-    if (middleInitial) candidates.push(`${first} ${middleInitial}`);
-  }
-
-  const firstInitial = initialFrom(first);
-  if (firstInitial) candidates.push(`${firstInitial} ${last}`);
-
-  const lastInitial = initialFrom(last);
-  if (lastInitial) candidates.push(`${first} ${lastInitial}`);
-
-  for (const candidate of candidates) {
-    if (candidate.length <= maxLength) {
-      return { label: candidate, shouldTruncate: false };
-    }
-  }
-
-  if (last.length <= maxLength) {
-    return { label: last, shouldTruncate: false };
-  }
-  const fallback = candidates[0] ?? cleaned;
-  return { label: fallback, shouldTruncate: fallback.length > maxLength };
-};
-
-const resolvePlayerRatingLabel = (rating: number | string) => {
-  if (typeof rating === "number") {
-    return Number.isFinite(rating) ? String(rating) : null;
-  }
-  const trimmed = String(rating ?? "").trim();
+const toTrimmedString = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 };
 
@@ -215,6 +162,32 @@ const resolveClockSeconds = (label: string, clockMs?: number | null) => {
     return Math.max(0, Math.floor((clockMs as number) / 1000));
   }
   return parseClockLabelSeconds(label);
+};
+
+const toBoardPlayerRating = (value?: number | string | null): number | undefined => {
+  const numeric = Number(value ?? NaN);
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+  return Math.trunc(numeric);
+};
+
+const toBoardPlayerFromViewer = (player: PlayerCardProps): BoardNavigationPlayer => {
+  const candidateName = toTrimmedString(player.name);
+  const shouldShowUnavailableName =
+    Boolean(player.missingData) ||
+    !candidateName ||
+    isPlaceholderPlayerName(candidateName) ||
+    candidateName.toLowerCase() === "unknown";
+  const name = shouldShowUnavailableName ? OFFICIAL_SOURCE_UNAVAILABLE_LABEL : candidateName;
+  return {
+    name: name ?? OFFICIAL_SOURCE_UNAVAILABLE_LABEL,
+    title: toTrimmedString(player.title),
+    rating: toBoardPlayerRating(player.rating),
+    flag: toTrimmedString(player.flag) ?? undefined,
+    federation: toTrimmedString(player.countryCode) ?? undefined,
+    nameSource: toTrimmedString(player.nameSource) ?? undefined,
+    missingReason: toTrimmedString(player.missingReason) ?? undefined,
+    missingData: Boolean(player.missingData),
+  };
 };
 
 const BOARD_SCAN_LIMIT = 20;
@@ -536,35 +509,6 @@ export function ViewerShell({
     if (typeof window === "undefined") return;
     setShareGameUrl(window.location.href);
   }, [replayShareOpen]);
-  const playerRowClass = isMini
-    ? "relative grid grid-cols-[minmax(0,1fr)_80px] items-center gap-3 rounded-xl border border-white/10 bg-slate-950/60 px-2.5 py-2 text-[10px] text-slate-200 sm:text-[11px]"
-    : isCompact
-      ? "relative flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-950/60 px-2.5 py-2 text-[10px] text-slate-200 sm:text-[11px]"
-      : "relative flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 px-3 py-2.5 text-[11px] text-slate-200 sm:text-xs";
-  const playerLeftClusterClass = "flex min-w-0 flex-1 items-center gap-2.5";
-  const playerNameRowClass = "flex min-w-0 items-center gap-2.5";
-  const playerTitleClass = isCompact
-    ? "rounded-full border border-amber-200/50 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-100"
-    : "rounded-full border border-amber-200/50 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-100";
-  const playerNameClass = isCompact
-    ? "text-sm font-semibold text-white sm:text-base"
-    : "text-base font-semibold text-white sm:text-lg";
-  const playerMetaClass = isCompact
-    ? "text-[9px] text-slate-300 sm:text-[10px]"
-    : "text-[10px] text-slate-300 sm:text-[11px]";
-  const playerCountryClass = isCompact
-    ? "text-[9px] uppercase tracking-wide text-slate-300 sm:text-[10px]"
-    : "text-[10px] uppercase tracking-wide text-slate-300 sm:text-[11px]";
-  const scorePillClass = isCompact
-    ? "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-tight"
-    : "rounded-full border px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-tight";
-  const clockClass = isCompact
-    ? "rounded-full border border-white/10 bg-slate-900/70 px-2 py-0.5 font-mono text-[9px] tracking-tight text-slate-200 shadow-inner sm:text-[10px]"
-    : "rounded-full border border-white/10 bg-slate-900/70 px-3 py-1 font-mono text-[11px] tracking-tight text-white shadow-inner sm:text-xs";
-  const rightClusterClass = isMini
-    ? "flex w-[80px] flex-none flex-col items-end gap-1"
-    : "flex shrink-0 items-center gap-1.5 sm:gap-2";
-  const nameMaxLength = isCompact ? COMPACT_NAME_MAX : DEFAULT_NAME_MAX;
   const showBroadcastCues = isMini;
   const activeColor = boardPosition.trim().split(/\s+/)[1];
   const toMoveColor =
@@ -574,79 +518,48 @@ export function ViewerShell({
   const renderPlayerRow = (
     player: PlayerCardProps,
     points: { score: string; variant: ScoreVariant },
-    options?: { showAnalysis?: boolean; rowColor?: "white" | "black"; isToMove?: boolean }
+    options?: {
+      showAnalysis?: boolean;
+      rowColor?: "white" | "black";
+      isToMove?: boolean;
+      boardPlayer?: BoardNavigationPlayer | null;
+      debugFlagProbe?: boolean;
+    }
   ) => {
-    const { label: displayName, shouldTruncate } = formatPlayerDisplayName(player.name, nameMaxLength);
+    void points.variant;
+    const showMissingData = Boolean(debugQueryEnabled && player.missingData);
     const clockSeconds = resolveClockSeconds(player.clockLabel, player.clockMs);
-    const clockUrgencyClass =
-      showBroadcastCues && typeof clockSeconds === "number"
-        ? clockSeconds <= CLOCK_CRITICAL_SECONDS
-          ? "border-rose-300/70 bg-rose-500/15 text-rose-100 ring-1 ring-rose-300/30"
-          : clockSeconds <= CLOCK_LOW_SECONDS
-            ? "border-amber-300/60 bg-amber-400/10 text-amber-100"
-            : ""
-        : "";
+    const clockMsForUrgency = Number.isFinite(player.clockMs ?? NaN)
+      ? Math.max(0, Number(player.clockMs))
+      : typeof clockSeconds === "number"
+        ? clockSeconds * 1000
+        : null;
+    const clockInTimeTrouble = isTimeTrouble(clockMsForUrgency, {
+      enabled: true,
+      timeTroubleMs: CLOCK_LOW_SECONDS * 1000,
+    });
     const incrementSeconds = Number.isFinite(player.clockIncrementMs ?? NaN)
       ? Math.round((player.clockIncrementMs as number) / 1000)
       : null;
     const incrementLabel = incrementSeconds && incrementSeconds > 0 ? `+${incrementSeconds}` : null;
+    const baseClockLabel = toTrimmedString(player.clockLabel) ?? "—";
+    const stripClockLabel = incrementLabel && baseClockLabel !== "—" ? `${baseClockLabel} ${incrementLabel}` : baseClockLabel;
+    const rowPlayer = options?.boardPlayer ?? toBoardPlayerFromViewer(player);
     const rowColor = options?.rowColor ?? "white";
-    const accentClass =
-      rowColor === "white" ? "bg-white/25" : "bg-slate-700/60";
     return (
-      <div className={playerRowClass}>
-        {showBroadcastCues ? (
-          <span
-            aria-hidden
-            className={`pointer-events-none absolute left-0 top-2 bottom-2 w-[2px] rounded-full ${accentClass}`}
-          />
-        ) : null}
-        <div className={playerLeftClusterClass}>
-          <span className="flex items-center justify-center text-base leading-none" aria-hidden>
-            {player.flag}
-          </span>
-          <div className={playerNameRowClass}>
-            {player.title ? <span className={playerTitleClass}>{player.title}</span> : null}
-            <span
-              className={`${playerNameClass} min-w-0 whitespace-nowrap ${
-                shouldTruncate ? "truncate" : ""
-              }`}
-            >
-              {displayName}
-            </span>
-            <span className={`${playerMetaClass} rating-text whitespace-nowrap shrink-0`}>
-              ({player.rating})
-            </span>
-            <span className={`${playerCountryClass} rating-text whitespace-nowrap shrink-0`}>
-              {player.countryCode}
-            </span>
-          </div>
-        </div>
-        <div className={rightClusterClass}>
-          {options?.showAnalysis ? (
-            <span className="rounded-full border border-rose-300/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase text-rose-100">
-              Analysis
-            </span>
-          ) : null}
-          <div className="flex items-center justify-end gap-1.5">
-            {showBroadcastCues && options?.isToMove ? (
-              <span
-                aria-hidden
-                className="h-1.5 w-1.5 rounded-full bg-emerald-300/70 ring-1 ring-emerald-200/40 animate-pulse"
-              />
-            ) : null}
-            <span className={`${scorePillClass} ${scorePillClasses(points.variant)}`}>{points.score}</span>
-          </div>
-          <div className={`${clockClass} ${clockUrgencyClass} relative whitespace-nowrap`}>
-            {player.clockLabel}
-            {incrementLabel ? (
-              <span className="pointer-events-none absolute left-full ml-1 text-[8px] font-semibold text-slate-400">
-                {incrementLabel}
-              </span>
-            ) : null}
-          </div>
-        </div>
-      </div>
+      <BroadcastIdentityBar
+        player={rowPlayer}
+        scorePill={points.score}
+        clockLabel={stripClockLabel}
+        hasClock={baseClockLabel !== "—" || clockMsForUrgency !== null}
+        isTimeTrouble={clockInTimeTrouble}
+        showAnalysis={Boolean(options?.showAnalysis)}
+        showBroadcastCues={showBroadcastCues}
+        isToMove={Boolean(options?.isToMove)}
+        rowColor={rowColor}
+        showMissingData={showMissingData}
+        debugFlagProbe={Boolean(options?.debugFlagProbe)}
+      />
     );
   };
 
@@ -742,12 +655,16 @@ export function ViewerShell({
             title: game.whiteTitle,
             rating: game.whiteRating,
             flag: game.whiteFlag,
+            country: game.whiteCountry,
+            federation: game.whiteCountry,
           },
           black: {
             name: game.black,
             title: game.blackTitle,
             rating: game.blackRating,
             flag: game.blackFlag,
+            country: game.blackCountry,
+            federation: game.blackCountry,
           },
         } as BoardNavigationEntry;
       })
@@ -776,8 +693,8 @@ export function ViewerShell({
       sideToMove: null,
       finalFen: null,
       moveList: null,
-      white: { name: "TBD", title: null },
-      black: { name: "TBD", title: null },
+      white: { name: OFFICIAL_SOURCE_UNAVAILABLE_LABEL, title: null },
+      black: { name: OFFICIAL_SOURCE_UNAVAILABLE_LABEL, title: null },
     }));
 
     return {
@@ -787,6 +704,13 @@ export function ViewerShell({
       debug: { ...debug, manifestCount: fromManifestFallback.length },
     };
   }, [boardId, boardIdentifier, liveVersion, mode]);
+  const currentBoardEntry = useMemo(
+    () =>
+      boardNavigation.boards.find(entry => entry.boardId === boardNavigation.normalizedBoardId) ?? null,
+    [boardNavigation.boards, boardNavigation.normalizedBoardId]
+  );
+  const topBoardPlayer = isWhiteAtBottom ? currentBoardEntry?.black ?? null : currentBoardEntry?.white ?? null;
+  const bottomBoardPlayer = isWhiteAtBottom ? currentBoardEntry?.white ?? null : currentBoardEntry?.black ?? null;
 
   useEffect(() => {
     flushLatestClockCache();
@@ -996,16 +920,32 @@ export function ViewerShell({
     </header>
   );
 
+  const livePlayerDebugNode =
+    debugQueryEnabled && mode === "live" ? (
+      <div className="rounded-lg border border-white/10 bg-slate-900/60 px-3 py-1.5 text-[10px] font-semibold text-slate-300">
+        <span>
+          boardId {boardId} | white nameSource {white.nameSource ?? "unknown"}
+          {white.missingData ? ` | white missingReason ${white.missingReason ?? "missing white name field"}` : ""}
+          {" | "}black nameSource {black.nameSource ?? "unknown"}
+          {black.missingData ? ` | black missingReason ${black.missingReason ?? "missing black name field"}` : ""}
+        </span>
+      </div>
+    ) : null;
+
   const playerRowsNode = (
     <div className={isMini ? "flex flex-col gap-3" : isCompact ? "flex flex-col gap-2" : "flex flex-col gap-2.5"}>
       {renderPlayerRow(topPlayer, topPoints, {
         showAnalysis: analysisDisplayed,
         rowColor: topRowColor,
         isToMove: toMoveColor === topRowColor,
+        boardPlayer: topBoardPlayer,
+        debugFlagProbe: debugQueryEnabled,
       })}
       {renderPlayerRow(bottomPlayer, bottomPoints, {
         rowColor: bottomRowColor,
         isToMove: toMoveColor === bottomRowColor,
+        boardPlayer: bottomBoardPlayer,
+        debugFlagProbe: false,
       })}
     </div>
   );
@@ -1573,6 +1513,7 @@ export function ViewerShell({
             <div className={layoutClassName}>
               <section className={boardSectionClassName}>
                 <div className="shrink-0">{headerNode}</div>
+                {livePlayerDebugNode ? <div className="shrink-0">{livePlayerDebugNode}</div> : null}
 
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="flex min-h-0 flex-1 flex-col [&>div]:flex [&>div]:min-h-0 [&>div]:flex-1 [&>div]:flex-col">
@@ -1584,6 +1525,8 @@ export function ViewerShell({
                           showAnalysis: analysisDisplayed,
                           rowColor: topRowColor,
                           isToMove: toMoveColor === topRowColor,
+                          boardPlayer: topBoardPlayer,
+                          debugFlagProbe: debugQueryEnabled,
                         })}
                         </div>
 
@@ -1609,6 +1552,8 @@ export function ViewerShell({
                         {renderPlayerRow(bottomPlayer, bottomPoints, {
                           rowColor: bottomRowColor,
                           isToMove: toMoveColor === bottomRowColor,
+                          boardPlayer: bottomBoardPlayer,
+                          debugFlagProbe: false,
                         })}
                         </div>
                         </div>

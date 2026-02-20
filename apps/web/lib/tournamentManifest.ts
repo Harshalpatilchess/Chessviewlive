@@ -6,6 +6,7 @@ import {
   normalizeTournamentSlug,
 } from "@/lib/boardId";
 import { getBroadcastTournament } from "@/lib/broadcasts/catalog";
+import { isPlaceholderPlayerName } from "@/lib/live/playerNormalization";
 
 export type FideTitle = "GM" | "IM" | "FM" | "CM" | "WGM" | "WIM" | "WFM" | "WCM" | null;
 
@@ -38,6 +39,10 @@ export type TournamentGame = {
   previewFen?: string | null;
   finalFen?: string | null;
   moveList?: string[] | null;
+  whiteNameSource?: string | null;
+  blackNameSource?: string | null;
+  whiteMissingReason?: string | null;
+  blackMissingReason?: string | null;
 };
 
 export type TournamentGameLiveUpdate = {
@@ -46,6 +51,14 @@ export type TournamentGameLiveUpdate = {
   board: number;
   white?: string | null;
   black?: string | null;
+  whiteTitle?: FideTitle | string | null;
+  blackTitle?: FideTitle | string | null;
+  whiteRating?: number | null;
+  blackRating?: number | null;
+  whiteCountry?: string | null;
+  blackCountry?: string | null;
+  whiteFlag?: string | null;
+  blackFlag?: string | null;
   result?: GameResult;
   status?: GameStatus;
   evaluation?: number | null;
@@ -56,6 +69,10 @@ export type TournamentGameLiveUpdate = {
   previewFen?: string | null;
   finalFen?: string | null;
   moveList?: string[] | null;
+  whiteNameSource?: string | null;
+  blackNameSource?: string | null;
+  whiteMissingReason?: string | null;
+  blackMissingReason?: string | null;
 };
 
 export type TournamentRoundEntry = {
@@ -69,6 +86,31 @@ export type TournamentManifest = Record<number, TournamentRoundManifest>;
 export type TournamentManifests = Record<TournamentSlug, TournamentManifest>;
 
 const normalizeSlug = (slug?: string | null) => (slug ? slug.trim().toLowerCase() : "");
+const VALID_FIDE_TITLES = new Set<Exclude<FideTitle, null>>([
+  "GM",
+  "IM",
+  "FM",
+  "CM",
+  "WGM",
+  "WIM",
+  "WFM",
+  "WCM",
+]);
+const toCleanString = (value?: string | null) => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+const toPositiveRating = (value?: number | null) => {
+  const numeric = Number(value ?? NaN);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return Math.trunc(numeric);
+};
+const normalizeFideTitle = (value?: FideTitle | string | null): FideTitle | null => {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase() as Exclude<FideTitle, null>;
+  return VALID_FIDE_TITLES.has(normalized) ? normalized : null;
+};
 
 export type FeaturedBroadcastMode = "live" | "replay";
 
@@ -835,8 +877,36 @@ export function applyTournamentLiveUpdates(updates: TournamentGameLiveUpdate[]):
       };
     }
     const base = manifests[slug][safeRound][safeBoard];
-    const nextWhite = typeof update.white === "string" && update.white.trim() ? update.white.trim() : null;
-    const nextBlack = typeof update.black === "string" && update.black.trim() ? update.black.trim() : null;
+    const nextWhiteCandidate = typeof update.white === "string" && update.white.trim() ? update.white.trim() : null;
+    const nextBlackCandidate = typeof update.black === "string" && update.black.trim() ? update.black.trim() : null;
+    const nextWhite =
+      nextWhiteCandidate && !isPlaceholderPlayerName(nextWhiteCandidate) ? nextWhiteCandidate : null;
+    const nextBlack =
+      nextBlackCandidate && !isPlaceholderPlayerName(nextBlackCandidate) ? nextBlackCandidate : null;
+    const nextWhiteTitle = normalizeFideTitle(update.whiteTitle);
+    const nextBlackTitle = normalizeFideTitle(update.blackTitle);
+    const nextWhiteRating = toPositiveRating(update.whiteRating);
+    const nextBlackRating = toPositiveRating(update.blackRating);
+    const nextWhiteCountry = toCleanString(update.whiteCountry);
+    const nextBlackCountry = toCleanString(update.blackCountry);
+    const nextWhiteFlag = toCleanString(update.whiteFlag);
+    const nextBlackFlag = toCleanString(update.blackFlag);
+    const whiteNameSource =
+      typeof update.whiteNameSource === "string" && update.whiteNameSource.trim()
+        ? update.whiteNameSource.trim()
+        : null;
+    const blackNameSource =
+      typeof update.blackNameSource === "string" && update.blackNameSource.trim()
+        ? update.blackNameSource.trim()
+        : null;
+    const whiteMissingReason =
+      typeof update.whiteMissingReason === "string" && update.whiteMissingReason.trim()
+        ? update.whiteMissingReason.trim()
+        : null;
+    const blackMissingReason =
+      typeof update.blackMissingReason === "string" && update.blackMissingReason.trim()
+        ? update.blackMissingReason.trim()
+        : null;
     const hasClockUpdate =
       Number.isFinite(update.whiteTimeMs ?? NaN) || Number.isFinite(update.blackTimeMs ?? NaN);
     const hasClockTimestamp = Number.isFinite(update.clockUpdatedAtMs ?? NaN);
@@ -849,6 +919,14 @@ export function applyTournamentLiveUpdates(updates: TournamentGameLiveUpdate[]):
       ...base,
       ...(nextWhite ? { white: nextWhite } : {}),
       ...(nextBlack ? { black: nextBlack } : {}),
+      ...(nextWhiteTitle ? { whiteTitle: nextWhiteTitle } : {}),
+      ...(nextBlackTitle ? { blackTitle: nextBlackTitle } : {}),
+      ...(nextWhiteRating != null ? { whiteRating: nextWhiteRating } : {}),
+      ...(nextBlackRating != null ? { blackRating: nextBlackRating } : {}),
+      ...(nextWhiteCountry ? { whiteCountry: nextWhiteCountry } : {}),
+      ...(nextBlackCountry ? { blackCountry: nextBlackCountry } : {}),
+      ...(nextWhiteFlag ? { whiteFlag: nextWhiteFlag } : {}),
+      ...(nextBlackFlag ? { blackFlag: nextBlackFlag } : {}),
       ...("result" in update ? { result: update.result } : {}),
       ...("status" in update ? { status: update.status } : {}),
       ...("evaluation" in update ? { evaluation: update.evaluation } : {}),
@@ -859,6 +937,10 @@ export function applyTournamentLiveUpdates(updates: TournamentGameLiveUpdate[]):
       ...("previewFen" in update ? { previewFen: update.previewFen } : {}),
       ...("finalFen" in update ? { finalFen: update.finalFen } : {}),
       ...("moveList" in update ? { moveList: update.moveList ?? null } : {}),
+      ...("whiteNameSource" in update ? { whiteNameSource } : {}),
+      ...("blackNameSource" in update ? { blackNameSource } : {}),
+      ...("whiteMissingReason" in update ? { whiteMissingReason } : {}),
+      ...("blackMissingReason" in update ? { blackMissingReason } : {}),
     };
     applied += 1;
   });

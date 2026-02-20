@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import Flag from "@/components/live/Flag";
-import TitleBadge from "@/components/boards/TitleBadge";
+import BoardPlayerIdentityInline, {
+  resolveBoardPlayerFlag,
+} from "@/components/boards/BoardPlayerIdentityInline";
 import type { BoardNavigationEntry } from "@/lib/boards/navigationTypes";
-import { parseBoardIdentifier } from "@/lib/boardId";
+import { normalizeTournamentSlug, parseBoardIdentifier } from "@/lib/boardId";
 import { buildViewerBoardPath } from "@/lib/paths";
 import { getBoardStatusLabel, normalizeResultValue } from "@/lib/boards/boardStatus";
 import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
@@ -34,6 +35,8 @@ type BoardsNavigationSidebarProps = {
     points?: number | null;
     title?: string | null;
     flag?: string;
+    federation?: string;
+    country?: string;
   }>;
 };
 
@@ -48,8 +51,28 @@ const normalizeLastNameKey = (name: string) => {
 };
 const resolvePlayerMeta = (
   player: LeaderboardPlayer,
-  metaMap: Map<string, { title?: string | null; flag?: string; name: string; rating?: number }>,
-  metaLastNameMap: Map<string, Array<{ title?: string | null; flag?: string; name: string; rating?: number }>>
+  metaMap: Map<
+    string,
+    {
+      title?: string | null;
+      flag?: string;
+      federation?: string;
+      country?: string;
+      name: string;
+      rating?: number;
+    }
+  >,
+  metaLastNameMap: Map<
+    string,
+    Array<{
+      title?: string | null;
+      flag?: string;
+      federation?: string;
+      country?: string;
+      name: string;
+      rating?: number;
+    }>
+  >
 ) => {
   const displayName = player.name?.trim() ?? "";
   const key = displayName ? normalizePlayerKey(displayName) : "";
@@ -85,6 +108,8 @@ const resolvePlayerMeta = (
     displayName: resolved?.name ?? displayName,
     title: player.title ?? resolved?.title ?? null,
     flag: player.flag ?? resolved?.flag,
+    federation: player.federation ?? resolved?.federation,
+    country: player.country ?? resolved?.country,
   };
 };
 
@@ -142,8 +167,19 @@ export default function BoardsNavigationSidebar({
     return Number.isInteger(points) ? String(points) : (points as number).toFixed(1);
   };
   const metaMap = useMemo(() => {
-    const map = new Map<string, { title?: string | null; flag?: string; name: string; rating?: number }>();
+    const map = new Map<
+      string,
+      {
+        title?: string | null;
+        flag?: string;
+        federation?: string;
+        country?: string;
+        name: string;
+        rating?: number;
+      }
+    >();
     const recordPlayer = (player: BoardNavigationEntry["white"]) => {
+      if (player.missingData) return;
       const name = player.name?.trim();
       if (!name) return;
       const key = normalizePlayerKey(name);
@@ -154,6 +190,8 @@ export default function BoardsNavigationSidebar({
         rating: existing.rating ?? player.rating,
         title: existing.title ?? player.title ?? null,
         flag: existing.flag ?? player.flag,
+        federation: existing.federation ?? player.federation,
+        country: existing.country ?? player.country,
       };
       map.set(key, next);
     };
@@ -166,7 +204,14 @@ export default function BoardsNavigationSidebar({
   const metaLastNameMap = useMemo(() => {
     const map = new Map<
       string,
-      Array<{ title?: string | null; flag?: string; name: string; rating?: number }>
+      Array<{
+        title?: string | null;
+        flag?: string;
+        federation?: string;
+        country?: string;
+        name: string;
+        rating?: number;
+      }>
     >();
     metaMap.forEach(meta => {
       const lastNameKey = normalizeLastNameKey(meta.name);
@@ -187,7 +232,17 @@ export default function BoardsNavigationSidebar({
   );
   const leaderboardMetaStats = useMemo(() => {
     const total = resolvedLeaderboardRows.length;
-    const enriched = resolvedLeaderboardRows.filter(player => player.flag || player.title).length;
+    const enriched = resolvedLeaderboardRows.filter(
+      player =>
+        Boolean(player.title) ||
+        Boolean(
+          resolveBoardPlayerFlag({
+            flag: player.flag,
+            federation: player.federation,
+            country: player.country,
+          }).value
+        )
+    ).length;
     return { total, enriched };
   }, [resolvedLeaderboardRows]);
   const filteredLeaderboardRows = useMemo(() => {
@@ -215,13 +270,24 @@ export default function BoardsNavigationSidebar({
     return queryString ? `?${queryString}` : "";
   }, [searchParams]);
   const liveFeedConfig = useMemo(() => {
-    if (!tournamentSlug || displayBoards.length === 0) return null;
+    if (!tournamentSlug) return null;
+    const safeSlug = normalizeTournamentSlug(tournamentSlug);
+    if (!safeSlug) return null;
+    const safeRound =
+      Number.isFinite(Number(activeRound ?? NaN)) && Number(activeRound) >= 1
+        ? Math.floor(Number(activeRound))
+        : 1;
+    if (displayBoards.length === 0) {
+      return { tournamentSlug: safeSlug, round: safeRound };
+    }
     const candidateId = displayBoards[0]?.boardId;
-    if (!candidateId) return null;
-    const parsed = parseBoardIdentifier(candidateId, tournamentSlug);
-    return { tournamentSlug: parsed.tournamentSlug, round: parsed.round };
-  }, [displayBoards, tournamentSlug]);
-  const liveFeedVersion = useTournamentLiveFeed({
+    if (!candidateId) {
+      return { tournamentSlug: safeSlug, round: safeRound };
+    }
+    const parsed = parseBoardIdentifier(candidateId, safeSlug);
+    return { tournamentSlug: parsed.tournamentSlug, round: safeRound };
+  }, [activeRound, displayBoards, tournamentSlug]);
+  const { version: liveFeedVersion } = useTournamentLiveFeed({
     tournamentSlug: liveFeedConfig?.tournamentSlug ?? null,
     round: liveFeedConfig?.round ?? null,
     enabled: liveUpdatesEnabled,
@@ -261,28 +327,27 @@ export default function BoardsNavigationSidebar({
   );
   const renderPlayerRow = (
     player: BoardNavigationEntry["white"],
-    fallbackLabel: string,
     scorePrefix?: string | null
   ) => {
-    const ratingValue = Number.isFinite(player?.rating ?? NaN) ? String(player.rating) : "—";
-    const ratingTone = ratingValue === "—" ? "text-slate-500/80" : "text-slate-400";
+    const showMissingData = Boolean(debug && player?.missingData);
     return (
-      <div className="flex min-w-0 items-center gap-1.5 text-[12px] font-semibold text-slate-50">
-        {player?.flag ? (
-          <Flag country={player.flag} className="text-base leading-none" />
-        ) : (
-          <span className="h-3.5 w-3.5 rounded-full border border-white/10 bg-slate-800" aria-hidden />
-        )}
-        {player?.title ? <TitleBadge title={player.title} /> : null}
+      <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold text-slate-50">
         {scorePrefix ? (
           <span className="mr-0.5 text-[11px] font-semibold leading-none tabular-nums text-slate-200">
             {scorePrefix}
           </span>
         ) : null}
-        <span className="min-w-0 flex-1 truncate">{player?.name || fallbackLabel}</span>
-        <span className={`ml-auto text-[11px] font-semibold tabular-nums ${ratingTone}`}>
-          {ratingValue}
-        </span>
+        <BoardPlayerIdentityInline
+          player={player}
+          debugFlagFallback={Boolean(debug)}
+          containerClassName="flex min-w-0 flex-1 flex-wrap items-center gap-1"
+          flagClassName="text-[11px] leading-none"
+          nameClassName="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+          ratingClassName="text-[11px] font-semibold text-slate-400"
+        />
+        {showMissingData ? (
+          <span className="text-[9px] font-medium text-amber-200/90">(missing player data)</span>
+        ) : null}
       </div>
     );
   };
@@ -359,12 +424,8 @@ export default function BoardsNavigationSidebar({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-col">
-                  {renderPlayerRow(
-                    board.white,
-                    `Board #${board.boardNumber}`,
-                    isFinished ? scorePrefixWhite : null
-                  )}
-                  {renderPlayerRow(board.black, "White / Black", isFinished ? scorePrefixBlack : null)}
+                  {renderPlayerRow(board.white, isFinished ? scorePrefixWhite : null)}
+                  {renderPlayerRow(board.black, isFinished ? scorePrefixBlack : null)}
                 </div>
               </div>
               {!isFinished && statusLabel !== "\u2014" ? (
@@ -403,13 +464,21 @@ export default function BoardsNavigationSidebar({
           >
             <span className="text-slate-400">{index + 1}</span>
             <div className="flex min-w-0 items-center gap-1.5">
-              {player.flag ? (
-                <Flag country={player.flag} className="text-base leading-none" />
-              ) : (
-                <span className="h-3.5 w-3.5 rounded-full border border-white/10 bg-slate-800" aria-hidden />
-              )}
-              {player.title ? <TitleBadge title={player.title} /> : null}
-              <span className="min-w-0 flex-1 truncate">{player.displayName}</span>
+              <BoardPlayerIdentityInline
+                player={{
+                  name: player.displayName || player.name || "Unknown",
+                  rating: player.rating,
+                  title: player.title ?? null,
+                  flag: player.flag,
+                  federation: player.federation,
+                  country: player.country,
+                }}
+                showRating={false}
+                debugFlagFallback={Boolean(debug)}
+                containerClassName="flex min-w-0 flex-1 flex-wrap items-center gap-1.5"
+                flagClassName="text-[11px] leading-none"
+                nameClassName="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+              />
             </div>
             <span className="text-right text-slate-400">{player.rating ?? "—"}</span>
             <span className="text-right text-slate-200">{formatPoints(player.points)}</span>

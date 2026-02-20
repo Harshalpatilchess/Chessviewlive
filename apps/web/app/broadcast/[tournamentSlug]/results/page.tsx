@@ -397,6 +397,21 @@ export default async function BroadcastResultsPage({ params, searchParams }: Tou
 
   const roundMenuItems = (() => {
     const now = Date.now();
+    const roundDateFormatter = new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+    const roundTimeFormatter = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+    const formatRoundDateLabel = (startsAtMs: number | null) => {
+      if (startsAtMs == null) return "-";
+      const date = new Date(startsAtMs);
+      return `${roundDateFormatter.format(date)} · ${roundTimeFormatter.format(date)}`;
+    };
     const resolveRoundStatus = (round: number, startsAtMs: number | null) => {
       if (round === activeRound) {
         const hasLive = boardEntries.some(entry => entry.status === "live");
@@ -416,11 +431,7 @@ export default async function BroadcastResultsPage({ params, searchParams }: Tou
     return roundSelectionOptions.map(round => {
       const meta = isLichessBroadcast ? broadcastRoundsMeta[round - 1] : null;
       const startsAtMs = meta?.startsAtMs ?? null;
-      const dateLabel = startsAtMs
-        ? new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(
-            new Date(startsAtMs)
-          )
-        : "-";
+      const dateLabel = formatRoundDateLabel(startsAtMs);
       const { statusLabel, statusTone } = resolveRoundStatus(round, startsAtMs ?? null);
       return {
         value: round,
@@ -428,6 +439,7 @@ export default async function BroadcastResultsPage({ params, searchParams }: Tou
         dateLabel,
         statusTone,
         statusLabel,
+        roundId: meta?.id ?? null,
       };
     });
   })();
@@ -536,7 +548,11 @@ export default async function BroadcastResultsPage({ params, searchParams }: Tou
               </Link>
             </div>
             <div className="flex items-center gap-3">
-              <RoundTextDropdown items={roundMenuItems} activeRound={activeRound} />
+              <RoundTextDropdown
+                items={roundMenuItems}
+                activeRound={activeRound}
+                tournamentSlug={normalizedSlug}
+              />
             </div>
           </div>
         </section>

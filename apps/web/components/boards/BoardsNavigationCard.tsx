@@ -3,11 +3,18 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Activity } from "lucide-react";
-import Flag from "@/components/live/Flag";
-import TitleBadge from "@/components/boards/TitleBadge";
+import BoardPlayerIdentityInline, { resolveBoardPlayerFlag } from "@/components/boards/BoardPlayerIdentityInline";
+import TournamentPlayerStrip from "@/components/boards/TournamentPlayerStrip";
 import EvalBar from "@/components/live/EvalBar";
 import BroadcastReactBoard from "@/components/viewer/BroadcastReactBoard";
-import { formatMiniBoardClockMs, MINI_BOARD_CLOCK_PLACEHOLDER } from "@/lib/boards/miniBoardClock";
+import { formatMiniBoardClockMs } from "@/lib/boards/miniBoardClock";
+import {
+  flushLatestClockCache,
+  readLatestClock,
+  writeLatestClock,
+  type LatestClockSource,
+} from "@/lib/boards/latestClockCache";
+import { getBroadcastTournament } from "@/lib/broadcasts/catalog";
 import { formatEvalLabel, mapEvaluationToBar, type EngineEvaluation } from "@/lib/engine/evalMapping";
 import { consumeForceEval, peekForceEval } from "@/lib/engine/miniEvalDebug";
 import {
@@ -30,7 +37,7 @@ type BoardsNavigationCardProps = {
   compact?: boolean;
   tournamentSlug?: string;
   mode?: "live" | "replay";
-  variant?: "default" | "tournament";
+  variant?: "default" | "tournament" | "viewerLarge";
   viewerEvalBars?: boolean;
   clockNowMs?: number | null;
   navEval?: {
@@ -65,6 +72,47 @@ const normalizeResult = (result?: GameResult): string | null => {
   return result === "1/2-1/2" ? "½-½" : result;
 };
 
+const resolveMiniSideScores = (result?: string | null): { white: string; black: string } => {
+  if (typeof result !== "string") return { white: "—", black: "—" };
+  const normalized = result
+    .trim()
+    .replace(/[–—−]/g, "-")
+    .replace(/\s+/g, "")
+    .replace(/½/g, "1/2");
+  if (normalized === "1-0") return { white: "1", black: "0" };
+  if (normalized === "0-1") return { white: "0", black: "1" };
+  if (normalized === "1/2-1/2") return { white: "1/2", black: "1/2" };
+  return { white: "—", black: "—" };
+};
+
+const normalizeClockMs = (value?: number | null): number | null => {
+  if (!Number.isFinite(value ?? NaN)) return null;
+  return Math.max(0, Math.floor(Number(value)));
+};
+
+const isUsableIncomingClockSide = (timeMs: number | null): boolean => {
+  if (!Number.isFinite(timeMs ?? NaN)) return false;
+  return (timeMs as number) >= 0;
+};
+
+const isUsableCachedClockSide = (timeMs: number | null): boolean =>
+  Number.isFinite(timeMs ?? NaN) && (timeMs as number) >= 0;
+
+const shouldUseCachedClockSide = (options: {
+  hasMounted: boolean;
+  incomingUsable: boolean;
+  cachedUsable: boolean;
+}): boolean => options.hasMounted && !options.incomingUsable && options.cachedUsable;
+
+const hasAnyUsableClockSide = (whiteUsable: boolean, blackUsable: boolean): boolean =>
+  whiteUsable || blackUsable;
+
+const EMPTY_CACHED_CLOCK_STATE: CachedClockState = {
+  whiteTimeMs: null,
+  blackTimeMs: null,
+  updatedAtMs: null,
+};
+
 const renderEvalFill = (evaluation?: number | null) => {
   if (evaluation === null || evaluation === undefined || Number.isNaN(evaluation)) {
     return 50;
@@ -93,6 +141,12 @@ type MiniEngineEval = {
   label: string;
   cp?: number;
   mate?: number;
+};
+
+type CachedClockState = {
+  whiteTimeMs: number | null;
+  blackTimeMs: number | null;
+  updatedAtMs: number | null;
 };
 
 type NavFenMeta = {
@@ -135,6 +189,7 @@ const MINI_EVAL_STORAGE_MAX = 200;
 const MINI_EVAL_COOLDOWN_MS = 2500;
 const MINI_BOARD_MISSING_FEN_LOGGED = new Set<string>();
 const REPLAY_MINI_REASON_LOGGED = new Set<string>();
+const TATA_MINI_FLAG_PROBE_LOGGED = new Set<string>();
 
 const getFenHash = (fen: string, full = false) => {
   const trimmed = fen.trim();
@@ -310,109 +365,60 @@ const writeMiniEvalStorage = (fenHash: string, value: MiniEngineEval | null) => 
   pruneMiniEvalStorage();
 };
 
+const MISSING_PLAYER_DATA_LABEL = "(missing player data)";
+
+const toTrimmedString = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const PlayerLine = ({
   player,
   compact,
   scorePill,
+  debug,
 }: {
   player: BoardNavigationPlayer;
   compact: boolean;
   scorePill?: string | null;
+  debug?: boolean;
 }) => {
-  const ratingValue = Number.isFinite(player?.rating ?? NaN) ? String(player.rating) : "\u2014";
-  const ratingTone = ratingValue === "\u2014" ? "text-slate-500/80" : "text-slate-100";
+  const showMissingData = Boolean(debug && player?.missingData);
   return (
     <div
-      className={`flex min-w-0 items-center rounded-lg border border-slate-700/40 bg-slate-900/70 ${
+      className={`flex min-w-0 items-start rounded-lg border border-slate-700/40 bg-slate-900/70 ${
         compact ? "gap-0.5 px-1 py-[2px]" : "gap-1 px-1.5 py-[3px]"
       }`}
     >
-      <div className={`flex min-w-0 flex-1 items-center ${compact ? "gap-0.5" : "gap-0.5"}`}>
-        {player.flag ? (
-          <Flag country={player.flag} className={`${compact ? "text-base" : "text-lg"} leading-none`} />
-        ) : (
-          <span
-            className={`${compact ? "h-4 w-4" : "h-5 w-5"} rounded-full border border-white/10 bg-slate-800`}
-            aria-hidden
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1">
+          <BoardPlayerIdentityInline
+            player={player}
+            debugFlagFallback={Boolean(debug)}
+            containerClassName="flex min-w-0 flex-1 flex-wrap items-center gap-1"
+            flagClassName={compact ? "text-[10px] leading-none" : "text-[11px] leading-none"}
+            titleCompact={compact}
+            titleClassName={compact ? "text-[8px]" : undefined}
+            nameClassName={`min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-semibold leading-[1.15] text-slate-50 ${
+              compact ? "text-[11px]" : "text-[12px]"
+            }`}
+            ratingClassName={`font-semibold leading-[1.15] text-slate-400 ${
+              compact ? "text-[11px]" : "text-[12px]"
+            }`}
           />
-        )}
-        <div className={`flex min-w-0 flex-1 items-center ${compact ? "gap-0.5" : "gap-0.5"}`}>
-          {player.title ? <TitleBadge title={player.title} compact={compact} /> : null}
-          <span className={`min-w-0 flex-1 truncate font-semibold leading-[1.1] text-slate-50 ${compact ? "text-[12px]" : "text-[12px]"}`}>
-            {player.name}
-          </span>
+          {showMissingData ? (
+            <span className="text-[9px] font-medium text-amber-200/90">{MISSING_PLAYER_DATA_LABEL}</span>
+          ) : null}
         </div>
       </div>
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex items-center gap-1 pt-0.5">
         {scorePill ? (
           <span className={`${pillBase} border-white/10 bg-white/5 text-slate-200 ${compact ? "px-1 py-[1px] text-[9px]" : "px-1.5 py-[2px] text-[10px]"}`}>
             {scorePill}
           </span>
         ) : null}
-        <span
-          className={`rating-text whitespace-nowrap tabular-nums ${compact ? "text-[10px]" : "text-[11px]"} ${ratingTone}`}
-          aria-label="Rating"
-        >
-          {ratingValue}
-        </span>
       </div>
-    </div>
-  );
-};
-
-const PlayerStrip = ({
-  player,
-  scorePill,
-  clockLabel,
-  hasClock,
-  isTimeTrouble,
-}: {
-  player: BoardNavigationPlayer;
-  scorePill?: string | null;
-  clockLabel?: string | null;
-  hasClock?: boolean;
-  isTimeTrouble?: boolean;
-}) => {
-  const ratingValue = Number.isFinite(player?.rating ?? NaN) ? String(player.rating) : "\u2014";
-  const ratingTone = ratingValue === "\u2014" ? "text-slate-500/80" : "text-slate-400";
-  const resolvedClockLabel = clockLabel ?? MINI_BOARD_CLOCK_PLACEHOLDER;
-  const clockTone = hasClock
-    ? isTimeTrouble
-      ? "border-rose-400/70 text-rose-50 shadow-[0_0_0_1px_rgba(248,113,113,0.25)]"
-      : "border-slate-600/60 text-slate-100"
-    : "border-slate-700/60 text-slate-500/80";
-  return (
-    <div className="flex min-h-[26px] items-center gap-1 rounded-lg border border-slate-800/60 bg-slate-950/70 px-1 py-0.5">
-      <div className="flex min-w-0 flex-1 items-center gap-1">
-        {player.flag ? (
-          <Flag
-            country={player.flag}
-            className="text-[16px] leading-none drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]"
-          />
-        ) : (
-          <span className="h-3.5 w-3.5 rounded-full border border-white/10 bg-slate-800" aria-hidden />
-        )}
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-          {player.title ? <TitleBadge title={player.title} /> : null}
-          <span className="min-w-0 flex-1 truncate text-[10px] font-semibold leading-tight text-slate-50">
-            {player.name}
-          </span>
-          <span className={`whitespace-nowrap text-[9px] font-semibold tabular-nums ${ratingTone}`}>
-            {ratingValue}
-          </span>
-          {scorePill ? (
-            <span className="rounded-full border border-white/10 bg-white/5 px-1.5 py-0.5 text-[9px] font-semibold text-slate-200">
-              {scorePill}
-            </span>
-          ) : null}
-        </div>
-      </div>
-      <span
-        className={`${pillBase} ${pillSm} min-w-[54px] tabular-nums ${clockTone}`}
-        aria-label="Clock"
-      >
-        {resolvedClockLabel}
-      </span>
     </div>
   );
 };
@@ -423,7 +429,7 @@ export const BoardsNavigationCard = ({
   isActive,
   paneQuery,
   compact = false,
-  tournamentSlug: _tournamentSlug,
+  tournamentSlug,
   mode,
   variant = "default",
   viewerEvalBars = false,
@@ -447,24 +453,74 @@ export const BoardsNavigationCard = ({
   const normalizedResult = normalizeResult(board.result);
   const isLiveResult = board.result === "*";
   const isExplicitLive = board.status === "live" || isLiveResult;
-  const hasClockData =
-    Number.isFinite(Number(board.whiteTimeMs ?? NaN)) || Number.isFinite(Number(board.blackTimeMs ?? NaN));
   const isFinished = Boolean(normalizedResult) || board.status === "final";
   const isScheduled = board.status === "scheduled";
   const isReplayCard = mode === "replay";
   const isLive = !isReplayCard && !isFinished && !isScheduled && isExplicitLive;
-  const clockBaseWhiteMs = Number.isFinite(board.whiteTimeMs ?? NaN)
-    ? Number(board.whiteTimeMs)
-    : null;
-  const clockBaseBlackMs = Number.isFinite(board.blackTimeMs ?? NaN)
-    ? Number(board.blackTimeMs)
-    : null;
-  const clockUpdatedAtMs = Number.isFinite(board.clockUpdatedAtMs ?? NaN)
-    ? Number(board.clockUpdatedAtMs)
-    : null;
-  const resolvedClockUpdatedAtMs = clockUpdatedAtMs ?? (hasClockData && isLive ? clockNowMs : null);
+  const clockKeyInput = useMemo(
+    () => ({
+      boardId: board.boardId,
+      tournamentSlug: tournamentSlug ?? null,
+      boardNumber: board.boardNumber,
+    }),
+    [board.boardId, board.boardNumber, tournamentSlug]
+  );
+  const incomingWhiteClockMs = normalizeClockMs(board.whiteTimeMs);
+  const incomingBlackClockMs = normalizeClockMs(board.blackTimeMs);
+  const clockUpdatedAtMs = normalizeClockMs(board.clockUpdatedAtMs);
+  const incomingWhiteClockUsable = isUsableIncomingClockSide(incomingWhiteClockMs);
+  const incomingBlackClockUsable = isUsableIncomingClockSide(incomingBlackClockMs);
+  const hasAnyUsableIncomingClock = hasAnyUsableClockSide(incomingWhiteClockUsable, incomingBlackClockUsable);
+  const [hasMounted, setHasMounted] = useState(false);
+  const [cachedClockState, setCachedClockState] = useState<CachedClockState>(EMPTY_CACHED_CLOCK_STATE);
+  const cachedWhiteClockUsable = isUsableCachedClockSide(cachedClockState.whiteTimeMs);
+  const cachedBlackClockUsable = isUsableCachedClockSide(cachedClockState.blackTimeMs);
+  const shouldUseCachedWhiteClock = shouldUseCachedClockSide({
+    hasMounted,
+    incomingUsable: incomingWhiteClockUsable,
+    cachedUsable: cachedWhiteClockUsable,
+  });
+  const shouldUseCachedBlackClock = shouldUseCachedClockSide({
+    hasMounted,
+    incomingUsable: incomingBlackClockUsable,
+    cachedUsable: cachedBlackClockUsable,
+  });
+  const clockBaseWhiteMs = incomingWhiteClockUsable
+    ? incomingWhiteClockMs
+    : shouldUseCachedWhiteClock
+      ? cachedClockState.whiteTimeMs
+      : null;
+  const clockBaseBlackMs = incomingBlackClockUsable
+    ? incomingBlackClockMs
+    : shouldUseCachedBlackClock
+      ? cachedClockState.blackTimeMs
+      : null;
+  const effectiveClockUpdatedAtMs =
+    board.sideToMove === "white"
+      ? incomingWhiteClockUsable
+        ? clockUpdatedAtMs
+        : shouldUseCachedWhiteClock
+          ? cachedClockState.updatedAtMs
+          : null
+      : board.sideToMove === "black"
+        ? incomingBlackClockUsable
+          ? clockUpdatedAtMs
+          : shouldUseCachedBlackClock
+            ? cachedClockState.updatedAtMs
+            : null
+        : null;
+  const resolvedClockUpdatedAtMs = effectiveClockUpdatedAtMs;
   const clockTickMs =
     typeof clockNowMs === "number" && Number.isFinite(clockNowMs) ? clockNowMs : null;
+  const clockCacheSource = useMemo<LatestClockSource>(() => {
+    if (mode === "replay") return "replay_input";
+    const normalizedSlug =
+      typeof tournamentSlug === "string" ? tournamentSlug.trim().toLowerCase() : "";
+    if (normalizedSlug && getBroadcastTournament(normalizedSlug)) {
+      return "broadcast_payload";
+    }
+    return "live_payload";
+  }, [mode, tournamentSlug]);
   const resolveClockMs = useCallback(
     (baseMs: number | null, side: "white" | "black") => {
       if (!Number.isFinite(baseMs ?? NaN)) return null;
@@ -484,6 +540,61 @@ export const BoardsNavigationCard = ({
   const blackClockLabel = formatMiniBoardClockMs(resolvedBlackClockMs);
   const isWhiteInTimeTrouble = isTimeTrouble(resolvedWhiteClockMs, { enabled: isLive });
   const isBlackInTimeTrouble = isTimeTrouble(resolvedBlackClockMs, { enabled: isLive });
+
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hasMounted) return;
+    const cachedClock = readLatestClock(clockKeyInput);
+    if (!cachedClock) {
+      setCachedClockState(EMPTY_CACHED_CLOCK_STATE);
+      return;
+    }
+    setCachedClockState({
+      whiteTimeMs: normalizeClockMs(cachedClock.whiteTimeMs),
+      blackTimeMs: normalizeClockMs(cachedClock.blackTimeMs),
+      updatedAtMs: normalizeClockMs(cachedClock.updatedAt),
+    });
+  }, [clockKeyInput, hasMounted]);
+
+  useEffect(() => {
+    if (!hasAnyUsableIncomingClock) return;
+    const existingClock = readLatestClock(clockKeyInput);
+    const existingWhiteClockMs = normalizeClockMs(existingClock?.whiteTimeMs);
+    const existingBlackClockMs = normalizeClockMs(existingClock?.blackTimeMs);
+    const existingWhiteClockUsable = isUsableCachedClockSide(existingWhiteClockMs);
+    const existingBlackClockUsable = isUsableCachedClockSide(existingBlackClockMs);
+    const mergedWhiteClockMs = incomingWhiteClockUsable
+      ? incomingWhiteClockMs
+      : existingWhiteClockUsable
+        ? existingWhiteClockMs
+        : null;
+    const mergedBlackClockMs = incomingBlackClockUsable
+      ? incomingBlackClockMs
+      : existingBlackClockUsable
+        ? existingBlackClockMs
+        : null;
+    if (mergedWhiteClockMs == null && mergedBlackClockMs == null) return;
+    const didWrite = writeLatestClock(clockKeyInput, {
+      whiteTimeMs: mergedWhiteClockMs,
+      blackTimeMs: mergedBlackClockMs,
+      source: clockCacheSource,
+    });
+    if (didWrite) {
+      flushLatestClockCache();
+    }
+  }, [
+    clockCacheSource,
+    clockKeyInput,
+    hasAnyUsableIncomingClock,
+    incomingBlackClockMs,
+    incomingBlackClockUsable,
+    incomingWhiteClockMs,
+    incomingWhiteClockUsable,
+  ]);
+
   const resolvedFen = navFen ? navFen.fen : board.previewFen ?? (isFinished ? board.finalFen : null);
   const normalizedPreviewFen = useMemo(
     () => (typeof resolvedFen === "string" ? resolvedFen.trim() : ""),
@@ -504,7 +615,7 @@ export const BoardsNavigationCard = ({
     hasMiniClockData ||
     Boolean(board.sideToMove) ||
     Number.isFinite(Number(board.evaluation ?? NaN));
-  const isTournamentMiniTile = variant === "tournament";
+  const isTournamentMiniTile = variant === "tournament" || variant === "viewerLarge";
   const isReplayTournamentTile = isTournamentMiniTile && mode === "replay";
   const shouldShowPendingBoard =
     isTournamentMiniTile &&
@@ -574,7 +685,7 @@ export const BoardsNavigationCard = ({
   const lastEvalRequestAtRef = useRef<number | null>(null);
   const encodedPaneQuery = resolvedPaneQuery ? encodeURIComponent(resolvedPaneQuery) : "";
   const statusMode = isFinished ? "replay" : "live";
-  const resolvedMode = variant === "tournament" ? statusMode : mode ?? statusMode;
+  const resolvedMode = isTournamentMiniTile ? statusMode : mode ?? statusMode;
   const baseHref = buildViewerBoardPath(board.boardId, resolvedMode);
   const querySuffix =
     typeof linkQuery === "string" ? linkQuery : resolvedPaneQuery ? `?pane=${encodedPaneQuery}` : "";
@@ -1233,11 +1344,11 @@ export const BoardsNavigationCard = ({
   }, []);
 
   const focusClass =
-    variant === "tournament"
+    isTournamentMiniTile
       ? " focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300/50 focus-visible:-translate-y-0.5"
       : "";
-  const compactHeightClass = variant === "tournament" ? "min-h-[70px]" : "min-h-[74px]";
-  const regularHeightClass = variant === "tournament" ? "min-h-[74px]" : "min-h-[78px]";
+  const compactHeightClass = isTournamentMiniTile ? "min-h-[70px]" : "min-h-[74px]";
+  const regularHeightClass = isTournamentMiniTile ? "min-h-[74px]" : "min-h-[78px]";
   const baseClass = compact
     ? `relative flex w-full min-w-0 items-stretch gap-0.5 rounded-xl border px-2 py-[2px] ${compactHeightClass} transition-all duration-150 cursor-pointer shadow-sm${focusClass}`
     : `relative flex w-full min-w-0 items-stretch gap-1 rounded-2xl border px-2 py-[3px] ${regularHeightClass} transition-all duration-150 cursor-pointer shadow-sm${focusClass}`;
@@ -1245,7 +1356,7 @@ export const BoardsNavigationCard = ({
     ? "border-sky-100/90 bg-slate-800/95 ring-2 ring-sky-300/25 shadow-[0_14px_38px_rgba(56,189,248,0.16)]"
     : "border-slate-700/80 bg-slate-900/95";
   const hoverClass =
-    variant === "tournament"
+    isTournamentMiniTile
       ? resolvedActive
         ? "hover:-translate-y-0.5 hover:border-sky-100 hover:bg-slate-800/90 hover:shadow-[0_14px_36px_rgba(0,0,0,0.4)] hover:z-20"
         : "hover:-translate-y-0.5 hover:border-slate-500/85 hover:bg-slate-800/90 hover:shadow-[0_14px_36px_rgba(0,0,0,0.4)] hover:z-20"
@@ -1314,10 +1425,11 @@ export const BoardsNavigationCard = ({
             ? "½"
             : null
       : null;
+  const miniSideScores = resolveMiniSideScores(board.result);
 
   useEffect(() => {
     if (process.env.NODE_ENV === "production") return;
-    if (variant !== "tournament") return;
+    if (!isTournamentMiniTile) return;
     if (isReplayTournamentTile) return;
     if (shouldShowPendingBoard) return;
     if (normalizedPreviewFen) return;
@@ -1326,7 +1438,7 @@ export const BoardsNavigationCard = ({
     console.info("[boards-navigation] missing mini board position; using start", {
       boardId: board.boardId,
     });
-  }, [board.boardId, isReplayTournamentTile, normalizedPreviewFen, shouldShowPendingBoard, variant]);
+  }, [board.boardId, isReplayTournamentTile, isTournamentMiniTile, normalizedPreviewFen, shouldShowPendingBoard]);
 
   useEffect(() => {
     if (process.env.NODE_ENV === "production") return;
@@ -1350,6 +1462,36 @@ export const BoardsNavigationCard = ({
     normalizedPreviewFen,
     replayStartOrPendingReason,
   ]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === "production") return;
+    if (!debug) return;
+    if (!isTournamentMiniTile) return;
+    const normalizedSlug =
+      typeof tournamentSlug === "string" ? tournamentSlug.trim().toLowerCase() : "";
+    if (normalizedSlug !== "tata-steel-2026" && normalizedSlug !== "tata-steel-masters-2026") return;
+    if (TATA_MINI_FLAG_PROBE_LOGGED.has(board.boardId)) return;
+    TATA_MINI_FLAG_PROBE_LOGGED.add(board.boardId);
+    const whiteResolved = resolveBoardPlayerFlag(board.white);
+    const blackResolved = resolveBoardPlayerFlag(board.black);
+    console.info("[boards-navigation] tata mini flag probe", {
+      boardId: board.boardId,
+      white: {
+        flag: toTrimmedString(board.white.flag),
+        federation: toTrimmedString(board.white.federation),
+        country: toTrimmedString(board.white.country),
+        resolvedSource: whiteResolved.source,
+        hasResolvedValue: Boolean(whiteResolved.value),
+      },
+      black: {
+        flag: toTrimmedString(board.black.flag),
+        federation: toTrimmedString(board.black.federation),
+        country: toTrimmedString(board.black.country),
+        resolvedSource: blackResolved.source,
+        hasResolvedValue: Boolean(blackResolved.value),
+      },
+    });
+  }, [board.black, board.boardId, board.white, debug, isTournamentMiniTile, tournamentSlug]);
 
   useEffect(() => {
     if (!viewerEvalBarsEnabled || !navDebugEnabled) return;
@@ -1394,7 +1536,7 @@ export const BoardsNavigationCard = ({
     });
   }, [board.boardId, navDebugEnabled, viewerEvalBarsEnabled, navEval?.cp, navEval?.mate, navEval?.fenHash]);
 
-  if (variant === "tournament") {
+  if (isTournamentMiniTile) {
     const tournamentBaseClass = "relative flex w-full min-w-0 flex-col gap-0.5 rounded-2xl border px-1.5 py-1 transition-all duration-150 cursor-pointer shadow-sm";
     const heuristicFill = renderMiniEvalFill(board.miniEvalCp ?? null);
     const evalSource = engineEval ? (lastEvalSource ?? "lite") : "heuristic";
@@ -1447,12 +1589,14 @@ export const BoardsNavigationCard = ({
         }}
         className={`${tournamentBaseClass} ${activeClass} ${hoverClass}`}
       >
-        <PlayerStrip
+        <TournamentPlayerStrip
           player={board.black}
-          scorePill={scorePillBlack}
-          clockLabel={blackClockLabel}
+          scorePill={miniSideScores.black}
+          clockLabel={blackHasClockData ? blackClockLabel : null}
           hasClock={blackHasClockData}
           isTimeTrouble={isBlackInTimeTrouble}
+          size={variant === "viewerLarge" ? "viewerLarge" : "mini"}
+          debugFlagProbe={debugLabelEnabled}
         />
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-0">
           <div className="mx-auto w-full rounded-2xl border border-white/15 bg-slate-900/80 p-[1px] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]">
@@ -1511,12 +1655,14 @@ export const BoardsNavigationCard = ({
             </button>
           </div>
         </div>
-        <PlayerStrip
+        <TournamentPlayerStrip
           player={board.white}
-          scorePill={scorePillWhite}
-          clockLabel={whiteClockLabel}
+          scorePill={miniSideScores.white}
+          clockLabel={whiteHasClockData ? whiteClockLabel : null}
           hasClock={whiteHasClockData}
           isTimeTrouble={isWhiteInTimeTrouble}
+          size={variant === "viewerLarge" ? "viewerLarge" : "mini"}
+          debugFlagProbe={debugLabelEnabled}
         />
         {debugLabelEnabled ? (
           <div className="pointer-events-none rounded-xl border border-white/10 bg-slate-950/70 px-2 py-1 text-[10px] font-mono font-semibold leading-snug text-slate-500/80">
@@ -1571,7 +1717,7 @@ export const BoardsNavigationCard = ({
 
       <div className={`flex min-w-0 flex-1 flex-col justify-center ${compact ? "gap-0.5" : "gap-[2px]"}`}>
         <div className={`transition-colors duration-200 ${isWhiteInTimeTrouble ? "text-rose-50" : ""}`}>
-          <PlayerLine player={board.white} compact={compact} scorePill={scorePillWhite} />
+          <PlayerLine player={board.white} compact={compact} scorePill={scorePillWhite} debug={debug} />
         </div>
         <div className={`mx-auto flex justify-center ${compact ? "w-[112px]" : "w-[128px]"}`}>
           <div className={`flex w-full flex-nowrap items-center justify-center ${compact ? "gap-1" : "gap-1.5"}`}>
@@ -1604,7 +1750,7 @@ export const BoardsNavigationCard = ({
           </div>
         </div>
         <div className={`transition-colors duration-200 ${isBlackInTimeTrouble ? "text-rose-50" : ""}`}>
-          <PlayerLine player={board.black} compact={compact} scorePill={scorePillBlack} />
+          <PlayerLine player={board.black} compact={compact} scorePill={scorePillBlack} debug={debug} />
         </div>
       </div>
 

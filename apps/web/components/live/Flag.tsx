@@ -3,6 +3,21 @@ type FlagProps = {
   className?: string;
 };
 
+export type FlagSourceValue = {
+  flag?: string | null;
+  federation?: string | null;
+  country?: string | null;
+};
+
+export type ResolvedFlagDisplay = {
+  sourceValue: string | null;
+  normalized: string;
+  emoji: string | null;
+  display: string;
+  isUnknown: boolean;
+};
+
+// Non-exhaustive mapping used for 3-letter federation/country codes seen in feeds.
 const ISO3_TO_ISO2: Record<string, string> = {
   AFG: "AF",
   ALB: "AL",
@@ -109,31 +124,112 @@ const ISO3_TO_ISO2: Record<string, string> = {
   WAL: "GB",
 };
 
-const toFlagEmoji = (iso2: string) => {
-  if (!/^[A-Z]{2}$/.test(iso2)) {
-    return null;
-  }
+const toTrimmedString = (value?: string | null): string | null => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const iso2ToFlagEmoji = (alpha2: string): string | null => {
+  const normalized = toTrimmedString(alpha2)?.toUpperCase() ?? "";
+  if (!/^[A-Z]{2}$/.test(normalized)) return null;
   const base = 0x1f1e6;
-  const chars = Array.from(iso2).map(char => base + (char.charCodeAt(0) - 65));
+  const chars = Array.from(normalized).map(char => base + (char.charCodeAt(0) - 65));
   return String.fromCodePoint(...chars);
 };
 
-const Flag = ({ country, className }: FlagProps) => {
-  const normalized = country.trim().toUpperCase();
-  const iso2 = normalized.length === 2 ? normalized : ISO3_TO_ISO2[normalized];
-  const emoji = iso2 ? toFlagEmoji(iso2) : null;
+const iso3ToIso2 = (alpha3: string): string | null => {
+  const normalized = toTrimmedString(alpha3)?.toUpperCase() ?? "";
+  if (!/^[A-Z]{3}$/.test(normalized)) return null;
+  return ISO3_TO_ISO2[normalized] ?? null;
+};
 
-  if (!emoji) {
-    return (
-      <span className={className} aria-hidden>
-        {normalized || ""}
-      </span>
-    );
+const isRegionalIndicator = (codePoint: number): boolean =>
+  codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff;
+
+const isFlagEmojiLiteral = (value: string): boolean => {
+  const chars = Array.from(value);
+  if (chars.length !== 2) return false;
+  return chars.every(char => {
+    const codePoint = char.codePointAt(0);
+    return codePoint != null && isRegionalIndicator(codePoint);
+  });
+};
+
+const isFlagSourceValue = (value: unknown): value is FlagSourceValue =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const resolveSourceValue = (input: string | FlagSourceValue | null | undefined): string | null => {
+  if (typeof input === "string") {
+    return toTrimmedString(input);
+  }
+  if (!isFlagSourceValue(input)) return null;
+  return toTrimmedString(input.flag) ?? toTrimmedString(input.federation) ?? toTrimmedString(input.country) ?? null;
+};
+
+export const resolveFlagEmoji = (
+  country: string
+): { normalized: string; emoji: string | null } => {
+  const trimmed = toTrimmedString(country);
+  if (!trimmed) return { normalized: "", emoji: null };
+  if (isFlagEmojiLiteral(trimmed)) {
+    return { normalized: trimmed, emoji: trimmed };
+  }
+  const normalized = trimmed.toUpperCase();
+  if (normalized.length === 2) {
+    return { normalized, emoji: iso2ToFlagEmoji(normalized) };
+  }
+  if (normalized.length === 3) {
+    const iso2 = iso3ToIso2(normalized);
+    return { normalized, emoji: iso2 ? iso2ToFlagEmoji(iso2) : null };
+  }
+  return { normalized, emoji: null };
+};
+
+export const resolveFlagDisplay = (
+  input: string | FlagSourceValue | null | undefined
+): ResolvedFlagDisplay => {
+  const sourceValue = resolveSourceValue(input);
+  if (!sourceValue) {
+    return {
+      sourceValue: null,
+      normalized: "",
+      emoji: null,
+      display: "",
+      isUnknown: true,
+    };
+  }
+
+  const { normalized, emoji } = resolveFlagEmoji(sourceValue);
+  if (emoji) {
+    return {
+      sourceValue,
+      normalized,
+      emoji,
+      display: emoji,
+      isUnknown: false,
+    };
+  }
+
+  return {
+    sourceValue,
+    normalized,
+    emoji: null,
+    display: "",
+    isUnknown: true,
+  };
+};
+
+const Flag = ({ country, className }: FlagProps) => {
+  const resolved = resolveFlagDisplay(country);
+
+  if (!resolved.emoji) {
+    return null;
   }
 
   return (
-    <span role="img" aria-label={normalized} className={className}>
-      {emoji}
+    <span role="img" aria-label={resolved.normalized} className={className}>
+      {resolved.display}
     </span>
   );
 };

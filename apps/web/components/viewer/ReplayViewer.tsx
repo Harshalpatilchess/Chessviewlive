@@ -1,5 +1,4 @@
 "use client";
-import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -23,13 +22,14 @@ import useCloudEngineEvaluation from "@/lib/engine/useCloudEngineEvaluation";
 import useBoardAnalysis from "@/lib/hooks/useBoardAnalysis";
 import usePersistentBoardOrientation from "@/lib/hooks/usePersistentBoardOrientation";
 import useTournamentLiveFeed from "@/lib/live/useTournamentLiveFeed";
+import { isPlaceholderPlayerName } from "@/lib/live/playerNormalization";
 import { getReplayProgress, setReplayProgress, clearReplayProgress } from "@/lib/replayProgress";
 import { getReplaySpeed, setReplaySpeed } from "@/lib/replaySettings";
 import {
   getBoardPlayers,
   getTournamentBoardIds,
 } from "@/lib/tournamentBoards";
-import { DEFAULT_TOURNAMENT_SLUG, buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
+import { buildBoardIdentifier, parseBoardIdentifier } from "@/lib/boardId";
 import { getTournamentGameManifest } from "@/lib/tournamentManifest";
 import type { GameResult, GameStatus } from "@/lib/tournamentManifest";
 import { getWorldCupPgnForBoard } from "@/lib/demoPgns";
@@ -107,14 +107,21 @@ const normalizeManifestResult = (result?: GameResult | null): GameResult | null 
 };
 
 const DEFAULT_PLAYER_CLOCK = "01:23:45";
-const DEMO_WHITE_PLAYER = { name: "Magnus Carlsen", rating: 2830, country: "NOR", flag: "🇳🇴" };
-const DEMO_BLACK_PLAYER = { name: "Gukesh D", rating: 2750, country: "IND", flag: "🇮🇳" };
-const DEMO_TOURNAMENT_LABEL = "FIDE World Cup 2025";
+const OFFICIAL_SOURCE_UNAVAILABLE_LABEL = "Official source unavailable";
 
-const formatPlayerName = (name: string | null | undefined, fallback: string) => {
-  if (!name) return fallback;
-  const trimmed = name.trim();
-  return trimmed.length > 0 ? trimmed : fallback;
+const resolvePlayerDisplay = (primary?: string | null, fallback?: string | null) => {
+  const normalize = (value?: string | null) => {
+    const candidate = typeof value === "string" ? value.trim() : "";
+    if (!candidate || isPlaceholderPlayerName(candidate) || candidate.toLowerCase() === "unknown") {
+      return null;
+    }
+    return candidate;
+  };
+  const first = normalize(primary);
+  if (first) return { name: first, missingData: false };
+  const second = normalize(fallback);
+  if (second) return { name: second, missingData: false };
+  return { name: OFFICIAL_SOURCE_UNAVAILABLE_LABEL, missingData: true };
 };
 
 const SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
@@ -237,44 +244,33 @@ export default function ReplayViewer({
   const endSecRef = useRef<number | null>(null);
   const startSecRef = useRef<number | null>(null);
   const loopActiveRef = useRef<boolean>(false);
+  const boardSelection = useMemo(() => parseBoardIdentifier(boardId), [boardId]);
+  const activeTournamentSlug = boardSelection.tournamentSlug;
   const overlayLabel = useMemo(
-    () => formatBoardContextLabel(boardId, tournamentId),
-    [boardId, tournamentId]
+    () => formatBoardContextLabel(boardId, activeTournamentSlug),
+    [activeTournamentSlug, boardId]
   );
   const boardPlayers = useMemo(() => {
-    if (!tournamentId) return null;
-    const players = getBoardPlayers(tournamentId, boardId);
+    const players = getBoardPlayers(activeTournamentSlug, boardId);
     if (!players.white && !players.black) return null;
     return players;
-  }, [tournamentId, boardId]);
+  }, [activeTournamentSlug, boardId]);
   const controlsPanelId = useMemo(() => `replay-controls-panel-${encodeURIComponent(boardId)}`, [boardId]);
-  const tournamentLabel = useMemo(() => {
-    const trimmed = tournamentId?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : null;
-  }, [tournamentId]);
+  const tournamentLabel = useMemo(() => resolveTournamentName(activeTournamentSlug), [activeTournamentSlug]);
   const tournamentHref = useMemo(() => {
-    if (!tournamentLabel) return null;
-    return `/t/${encodeURIComponent(tournamentLabel)}`;
-  }, [tournamentLabel]);
+    return `/broadcast/${encodeURIComponent(activeTournamentSlug)}`;
+  }, [activeTournamentSlug]);
   const canonicalPath = useMemo(
-    () => buildBroadcastBoardPath(boardId, "replay", tournamentId),
-    [boardId, tournamentId]
+    () => buildBroadcastBoardPath(boardId, "replay", activeTournamentSlug),
+    [activeTournamentSlug, boardId]
   );
   const replayPath = canonicalPath;
   const latestReplayPath = useMemo(() => {
     if (!replayPath) return null;
     return `${replayPath}?latest=1`;
   }, [replayPath]);
-  const fallbackSlug = useMemo(() => {
-    const trimmed = tournamentId?.trim().toLowerCase();
-    return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TOURNAMENT_SLUG;
-  }, [tournamentId]);
-  const boardSelection = useMemo(
-    () => parseBoardIdentifier(boardId, fallbackSlug),
-    [boardId, fallbackSlug]
-  );
-  const liveFeedVersion = useTournamentLiveFeed({
-    tournamentSlug: boardSelection.tournamentSlug,
+  const { version: liveFeedVersion, hasFetchedOnce: liveFeedHasFetchedOnce } = useTournamentLiveFeed({
+    tournamentSlug: activeTournamentSlug,
     round: boardSelection.round,
     enabled: liveUpdatesEnabled,
     intervalMs: liveUpdatesIntervalMs,
@@ -282,31 +278,35 @@ export default function ReplayViewer({
   const boardManifestGame = useMemo(
     () =>
       getTournamentGameManifest(
-        boardSelection.tournamentSlug,
+        activeTournamentSlug,
         boardSelection.round,
         boardSelection.board
       ),
-    [boardSelection.tournamentSlug, boardSelection.round, boardSelection.board, liveFeedVersion]
+    [activeTournamentSlug, boardSelection.round, boardSelection.board, liveFeedVersion]
   );
-  const manifestWhiteName = boardManifestGame?.white ?? DEMO_WHITE_PLAYER.name;
-  const manifestBlackName = boardManifestGame?.black ?? DEMO_BLACK_PLAYER.name;
-  const whitePlayerName = formatPlayerName(boardPlayers?.white, manifestWhiteName);
-  const blackPlayerName = formatPlayerName(boardPlayers?.black, manifestBlackName);
+  const whitePlayer = resolvePlayerDisplay(boardPlayers?.white, boardManifestGame?.white ?? null);
+  const blackPlayer = resolvePlayerDisplay(boardPlayers?.black, boardManifestGame?.black ?? null);
   const whiteTitle = boardManifestGame?.whiteTitle ?? null;
   const blackTitle = boardManifestGame?.blackTitle ?? null;
-  const whiteFlag = boardManifestGame?.whiteFlag ?? DEMO_WHITE_PLAYER.flag;
-  const blackFlag = boardManifestGame?.blackFlag ?? DEMO_BLACK_PLAYER.flag;
-  const whiteRating = boardManifestGame?.whiteRating ?? DEMO_WHITE_PLAYER.rating;
-  const blackRating = boardManifestGame?.blackRating ?? DEMO_BLACK_PLAYER.rating;
-  const whiteCountryCode = boardManifestGame?.whiteCountry ?? DEMO_WHITE_PLAYER.country;
-  const blackCountryCode = boardManifestGame?.blackCountry ?? DEMO_BLACK_PLAYER.country;
-  const whiteDisplayName = whitePlayerName;
-  const blackDisplayName = blackPlayerName;
+  const whiteFlag = boardManifestGame?.whiteFlag?.trim() || boardManifestGame?.whiteCountry?.trim() || null;
+  const blackFlag = boardManifestGame?.blackFlag?.trim() || boardManifestGame?.blackCountry?.trim() || null;
+  const whiteRating =
+    Number.isFinite(Number(boardManifestGame?.whiteRating ?? NaN)) && Number(boardManifestGame?.whiteRating) > 0
+      ? Math.trunc(Number(boardManifestGame?.whiteRating))
+      : null;
+  const blackRating =
+    Number.isFinite(Number(boardManifestGame?.blackRating ?? NaN)) && Number(boardManifestGame?.blackRating) > 0
+      ? Math.trunc(Number(boardManifestGame?.blackRating))
+      : null;
+  const whiteCountryCode = boardManifestGame?.whiteCountry?.trim() || null;
+  const blackCountryCode = boardManifestGame?.blackCountry?.trim() || null;
+  const whiteDisplayName = whitePlayer.name;
+  const blackDisplayName = blackPlayer.name;
   const boardResult = normalizeManifestResult(boardManifestGame?.result ?? null);
   const boardStatus: GameStatus | null = boardManifestGame?.status ?? null;
   const boardNumber = boardSelection.board;
-  const displayGameLabel = DEMO_TOURNAMENT_LABEL;
-  const isWorldCupReplay = boardSelection.tournamentSlug === "worldcup2025";
+  const displayGameLabel = resolveTournamentName(activeTournamentSlug);
+  const isWorldCupReplay = activeTournamentSlug === "worldcup2025";
   const replayRawPgn = useMemo(() => {
     if (!isWorldCupReplay) return null;
     const raw = getWorldCupPgnForBoard(boardSelection.board);
@@ -452,7 +452,7 @@ export default function ReplayViewer({
     onPieceDrop: handlePieceDrop,
   } = useBoardAnalysis({
     boardId,
-    tournamentId,
+    tournamentId: activeTournamentSlug,
     plies,
     currentMoveIndex,
     officialFen: boardPosition,
@@ -551,15 +551,14 @@ export default function ReplayViewer({
     return buildBroadcastBoardPath(nextBoardId, "replay", boardSelection.tournamentSlug);
   }, [boardSelection]);
   const tournamentBoardIds = useMemo(() => {
-    if (!tournamentId) return null;
-    return getTournamentBoardIds(tournamentId);
-  }, [tournamentId]);
+    return getTournamentBoardIds(activeTournamentSlug);
+  }, [activeTournamentSlug]);
   const boardSwitcherOptions = useMemo(() => {
-    if (!tournamentId || !tournamentBoardIds || tournamentBoardIds.length < 2) return null;
+    if (!tournamentBoardIds || tournamentBoardIds.length < 2) return null;
     return tournamentBoardIds.map(id => {
       const trimmed = id.trim();
-      const paths = buildBoardPaths(trimmed, tournamentId);
-      const players = getBoardPlayers(tournamentId, trimmed);
+      const paths = buildBoardPaths(trimmed, activeTournamentSlug);
+      const players = getBoardPlayers(activeTournamentSlug, trimmed);
       return {
         boardId: trimmed,
         label: formatBoardLabel(trimmed),
@@ -567,21 +566,7 @@ export default function ReplayViewer({
         players,
       };
     });
-  }, [tournamentId, tournamentBoardIds]);
-  const isTournamentBoardConfigured = useMemo(() => {
-    if (!tournamentId) return true;
-    const parsed = parseBoardIdentifier(boardId, tournamentId);
-    const normalizedBoardId = buildBoardIdentifier(
-      parsed.tournamentSlug,
-      parsed.round,
-      parsed.board
-    ).toLowerCase();
-    const parsedOk = normalizedBoardId === boardId.trim().toLowerCase();
-    const game = parsedOk
-      ? getTournamentGameManifest(tournamentId, parsed.round, parsed.board)
-      : null;
-    return Boolean(game);
-  }, [tournamentId, boardId]);
+  }, [activeTournamentSlug, tournamentBoardIds]);
   const currentBoardLabel = useMemo(() => formatBoardLabel(boardId), [boardId]);
   const [speed, setSpeed] = useState<SpeedValue>(() => {
     if (typeof window === "undefined") return 1;
@@ -651,20 +636,13 @@ export default function ReplayViewer({
   }, []);
 
   useEffect(() => {
-    if (tournamentId && !isTournamentBoardConfigured) {
-      setVideos([]);
-      setSelected(null);
-      setCurrentIndex(-1);
-      setLoading(false);
-      setError(null);
-      return;
-    }
     // Temporarily skip replay API fetch; fallback to local demo plies/UI
     setVideos([]);
     setSelected(null);
     setCurrentIndex(-1);
     setLoading(false);
-  }, [boardId, tournamentId, isTournamentBoardConfigured]);
+    setError(null);
+  }, [boardId]);
 
   useEffect(() => {
     return () => {
@@ -1441,39 +1419,13 @@ export default function ReplayViewer({
     };
   }, [boardId, videos, selected, durationSec, updateSelected, currentIndex]);
 
-  const unconfiguredNotice =
-    tournamentId && !isTournamentBoardConfigured ? (
-      <div className="rounded-xl border border-dashed border-neutral-300 bg-white p-6 text-sm text-neutral-700 space-y-3">
-        <h1 className="text-lg font-semibold text-neutral-900">
-          This board is not configured for this tournament.
-        </h1>
-        <p>Please check your tournament board settings or pick another board below.</p>
-        {tournamentHref && (
-          <Link
-            href={tournamentHref}
-            className="inline-flex items-center gap-1 rounded border border-blue-200 px-3 py-1 text-blue-700 transition hover:bg-blue-50"
-          >
-            ← Go to all boards in this tournament
-          </Link>
-        )}
-        {boardSwitcherOptions && (
-          <div className="space-y-1">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Available boards</div>
-            <div className="flex flex-wrap gap-2">
-              {boardSwitcherOptions.map(option => (
-                <Link
-                  key={option.boardId}
-                  href={option.href}
-                  className="rounded border border-neutral-200 px-3 py-1 text-xs font-semibold text-neutral-700 transition hover:bg-neutral-100"
-                >
-                  Watch {option.label}
-                </Link>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    ) : null;
+  const showOfficialSourceUnavailableBanner =
+    liveFeedHasFetchedOnce && (!boardManifestGame || whitePlayer.missingData || blackPlayer.missingData);
+  const officialSourceUnavailableBanner = showOfficialSourceUnavailableBanner ? (
+    <div className="rounded-xl border border-white/10 bg-slate-900/60 px-4 py-2 text-sm font-semibold text-slate-200">
+      Official source unavailable
+    </div>
+  ) : null;
 
   const hasVideo = Boolean(selected);
 
@@ -1749,7 +1701,7 @@ export default function ReplayViewer({
 
   const videoFooter = (
     <>
-      {unconfiguredNotice}
+      {officialSourceUnavailableBanner}
       {loading && <div>Loading recordings...</div>}
       {error && <div className="text-sm text-red-600">Error: {error}</div>}
       {recordingSelector}
@@ -1852,6 +1804,7 @@ export default function ReplayViewer({
           countryCode: whiteCountryCode,
           flag: whiteFlag,
           title: whiteTitle,
+          missingData: whitePlayer.missingData,
           clockLabel: DEFAULT_PLAYER_CLOCK,
         },
         black: {
@@ -1860,6 +1813,7 @@ export default function ReplayViewer({
           countryCode: blackCountryCode,
           flag: blackFlag,
           title: blackTitle,
+          missingData: blackPlayer.missingData,
           clockLabel: DEFAULT_PLAYER_CLOCK,
         },
       }}

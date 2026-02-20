@@ -1,5 +1,18 @@
+export type DgtBoardPlayer = {
+  name: string;
+  title?: string | null;
+  rating?: number | null;
+  federation?: string | null;
+  country?: string | null;
+  flag?: string | null;
+  __metaSource?: "upstream" | "roster" | "missing";
+  nameSource?: "direct" | "first+last" | "pgn" | "manifest" | "unknown";
+  missingReason?: string | null;
+};
+
 export type DgtBoardState = {
   board: number;
+  boardId?: string;
   fen?: string | null;
   moves?: string[];
   finalFen?: string | null;
@@ -8,8 +21,10 @@ export type DgtBoardState = {
   fenSource?: string | null;
   event?: string | null;
   date?: string | null;
-  white?: string | null;
-  black?: string | null;
+  white?: DgtBoardPlayer | string | null;
+  black?: DgtBoardPlayer | string | null;
+  whiteName?: string | null;
+  blackName?: string | null;
   whiteElo?: string | null;
   blackElo?: string | null;
   eco?: string | null;
@@ -26,5 +41,12 @@ export type DgtLivePayload = {
   tournamentSlug: string;
   round: number;
   boards: DgtBoardState[];
+  games?: DgtBoardState[];
+  pairings?: DgtBoardState[];
+  roundData?: {
+    boards?: DgtBoardState[];
+    games?: DgtBoardState[];
+    pairings?: DgtBoardState[];
+  };
   clocksAvailable?: boolean;
 };
