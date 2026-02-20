@@ -1,0 +1,1406 @@
+import { StatusBar } from 'expo-status-bar';
+import { StyleSheet, Text, View, TouchableOpacity, Modal, Pressable, Alert, useWindowDimensions, Switch } from 'react-native';
+import { ChevronLeft, ChevronRight, FlipHorizontal, Share2, Play, Pause, FlaskConical, Activity } from 'lucide-react-native'; // Changed Activity to lucide
+import { Ionicons } from '@expo/vector-icons';
+import { broadcastTheme } from '../theme/broadcastTheme';
+import { premiumTheme } from '../theme/premiumTheme';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { RootStackParamList } from '../navigation/types';
+import { useState, memo, useEffect, useMemo, useRef, useCallback } from 'react';
+import MiniBoard from '../components/MiniBoard';
+import Capsule from '../components/Capsule';
+import AboutModal from '../components/AboutModal';
+import EvalBar from '../components/EvalBar';
+import GameTabs, { TabType } from '../components/GameTabs';
+import soundManager from '../utils/soundManager';
+import { Chess } from 'chess.js';
+import NotationView, { Move } from '../components/NotationView';
+import EngineView from '../components/EngineView';
+import { usePollTournamentGames } from '../hooks/usePollTournamentGames';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
+import PlayerProfileToast, { PlayerData } from '../components/PlayerProfileToast';
+import { LayoutRectangle } from 'react-native';
+import { useGameClock } from '../hooks/useGameClock';
+import { useFastGamePoller } from '../hooks/useFastGamePoller';
+import { parsePgnToMainlineMoves } from '../utils/pgnUtils';
+import { getLichessRoundId } from '../services/tataSteel';
+import { fetchRoundPgn, parsePgnForRound } from '../services/lichessBroadcast';
+import { isGameFinished } from '../utils/roundSelection'; // Assuming this util exists or check local use
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Game'>;
+
+// SIMPLE MEMORY CACHE
+const MOVES_CACHE = new Map<string, { pgn: string; moves: Move[] }>();
+
+// Helper function to convert country code to flag emoji
+function getFlagEmoji(countryCode?: string): string {
+    if (!countryCode || countryCode.length !== 2) return '';
+    const codePoints = countryCode
+        .toUpperCase()
+        .split('')
+        .map(char => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+}
+
+// Format clock with zero-padding (mm:ss or hh:mm:ss)
+function formatClock(clock: string): string {
+    if (!clock) return '';
+    const parts = clock.split(':');
+    if (parts.length === 2) {
+        const mins = parts[0].padStart(2, '0');
+        const secs = parts[1].padStart(2, '0');
+        return `${mins}:${secs}`;
+    } else if (parts.length === 3) {
+        const hours = parts[0].padStart(2, '0');
+        const mins = parts[1].padStart(2, '0');
+        const secs = parts[2].padStart(2, '0');
+        return `${hours}:${mins}:${secs}`;
+    }
+    return clock;
+}
+
+
+
+const PlayerInfoBlock = memo(({
+    name,
+    title,
+    federation,
+    rating,
+    clock,
+    align,
+    isWhite,
+    onPress
+}: {
+    name: string;
+    title?: string;
+    federation?: string;
+    rating?: number;
+    clock?: string;
+    align: 'left' | 'right';
+    isWhite: boolean;
+    onPress: (data: PlayerData, anchor: LayoutRectangle) => void;
+}) => {
+    const flag = getFlagEmoji(federation);
+    const formattedClock = formatClock(clock || '');
+    const touchableRef = useRef<View>(null);
+
+    const handlePress = useCallback(() => {
+        touchableRef.current?.measureInWindow((x, y, width, height) => {
+            // Pass measurement up
+            onPress({
+                name,
+                title,
+                rating,
+                flagEmoji: flag
+            }, { x, y, width, height });
+        });
+    }, [name, title, rating, flag, onPress]);
+
+    // Placeholder flag (small circle) if missing
+    const flagDisplay = flag ? (
+        <Text style={styles.stripFlag}>{flag}</Text>
+    ) : (
+        <View style={styles.stripFlagPlaceholder} />
+    );
+
+    return (
+        <View style={[styles.stripPlayerBlock, align === 'left' ? styles.alignLeft : styles.alignRight]}>
+            <View ref={touchableRef} collapsable={false}>
+                <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={handlePress}
+                    style={{ position: 'relative' }}
+                >
+                    <View style={[styles.stripNameRow, align === 'right' && { justifyContent: 'flex-end' }]}>
+                        {flagDisplay}
+                        {title && <Capsule variant="title">{title}</Capsule>}
+
+                        <Text style={styles.stripName} numberOfLines={1}>
+                            {name}
+                        </Text>
+                    </View>
+                    <View style={styles.stripStatsRow}>
+                        <Text style={styles.stripRating}>{rating || '--'}</Text>
+                        <Text style={styles.stripTime}>{formattedClock || '--'}</Text>
+                    </View>
+                </TouchableOpacity>
+            </View>
+        </View>
+    );
+});
+
+const PlayerStrip = memo(({
+    whiteName, whiteTitle, whiteFederation, whiteRating, whiteClock,
+    blackName, blackTitle, blackFederation, blackRating, blackClock,
+    result,
+    onPlayerPress
+}: {
+    whiteName: string; whiteTitle?: string; whiteFederation?: string; whiteRating?: number; whiteClock?: string;
+    blackName: string; blackTitle?: string; blackFederation?: string; blackRating?: number; blackClock?: string;
+    result?: string;
+    onPlayerPress: (data: PlayerData, anchor: LayoutRectangle) => void;
+}) => {
+    return (
+        <View style={styles.playerStrip}>
+            {/* White Player (Left) */}
+            <PlayerInfoBlock
+                name={whiteName}
+                title={whiteTitle}
+                federation={whiteFederation}
+                rating={whiteRating}
+                clock={whiteClock}
+                align="left"
+                isWhite={true}
+                onPress={onPlayerPress}
+            />
+
+            {/* Center Result */}
+            <View style={styles.stripCenter}>
+                <Text style={styles.stripCenterText}>{result}</Text>
+            </View>
+
+            {/* Black Player (Right) */}
+            <PlayerInfoBlock
+                name={blackName}
+                title={blackTitle}
+                federation={blackFederation}
+                rating={blackRating}
+                clock={blackClock}
+                align="right"
+                isWhite={false}
+                onPress={onPlayerPress}
+            />
+        </View>
+    );
+});
+
+export default function GameScreen({ route, navigation }: Props) {
+    const {
+        tournamentName,
+        round,
+        whiteName,
+        blackName,
+        whiteTitle,
+        blackTitle,
+        whiteFederation,
+        blackFederation,
+        whiteRating,
+        blackRating,
+        whiteClock,
+        blackClock,
+        whiteResult,
+        blackResult,
+        isLive,
+        fen,
+        lastMove,
+        evalCp,
+        gameId, // Assuming gameId is passed in route.params
+        tournamentSlug,
+        pgn: initialPgn, // Rename to avoid conflict with history logic
+    } = route.params;
+
+    // Polling for live updates (Silent - Slow Background)
+    const { games: liveGames } = usePollTournamentGames(tournamentSlug);
+    const liveGame = liveGames.find(g => g.gameId === gameId);
+
+    // Fast Poller (Single Game)
+    const { fastUpdate } = useFastGamePoller(
+        round,
+        whiteName,
+        blackName,
+        isLive, // Initial state
+        gameId
+    );
+
+    // PGN Backfill State
+    const [backfillPgn, setBackfillPgn] = useState<string | null>(null);
+
+    // Merge strategy: Fast -> Live -> Backfill -> Initial
+    const activePgn = fastUpdate?.pgn || liveGame?.pgn || backfillPgn || initialPgn;
+    const activeIsLive = fastUpdate ? fastUpdate.isLive : (liveGame ? liveGame.isLive : isLive);
+
+    // For Eval, we stick to slow polling or params (Fast poller doesn't parse text annotations yet)
+    const activeEvalCp = liveGame?.scoreCp ?? liveGame?.evalCp ?? evalCp;
+
+    // Result / Clock Overrides
+    const activeWhiteClock = fastUpdate?.whiteClock || liveGame?.whiteClock || whiteClock || '';
+    const activeBlackClock = fastUpdate?.blackClock || liveGame?.blackClock || blackClock || '';
+    const activeWhiteResult = fastUpdate?.whiteResult || liveGame?.whiteResult || whiteResult;
+    const activeBlackResult = fastUpdate?.blackResult || liveGame?.blackResult || blackResult;
+
+    // --- PGN BACKFILL EFFECT ---
+    useEffect(() => {
+        // Only run if we don't have a good PGN yet and game looks finished
+        const currentPgnLen = activePgn ? activePgn.length : 0;
+        const resultString = activeWhiteResult || activeBlackResult || '';
+        const seemsFinished = (activeIsLive === false) || (resultString.length > 0 && resultString !== '*');
+
+        if (seemsFinished && !backfillPgn && currentPgnLen < 500) {
+            const runBackfill = async () => {
+                const rId = await getLichessRoundId(round);
+                if (!rId) return;
+
+                const fullRoundPgn = await fetchRoundPgn(rId);
+                if (fullRoundPgn) {
+                    const map = parsePgnForRound(fullRoundPgn);
+                    const key = `${whiteName.toLowerCase()}-${blackName.toLowerCase()}`;
+                    const foundPgn = map.get(key) || map.get(`${blackName.toLowerCase()}-${whiteName.toLowerCase()}`);
+
+                    if (foundPgn && foundPgn.length > currentPgnLen) {
+                        console.log(`[PGN_BACKFILL] roundId=${rId} found=true pgnLen=${foundPgn.length} moves=${foundPgn.replace(/.*?\]\s*/g, '').substring(0, 20)}...`);
+                        setBackfillPgn(foundPgn);
+                    } else {
+                        if (__DEV__) console.log(`[PGN_BACKFILL] roundId=${rId} found=${!!foundPgn} no_improvement`);
+                    }
+                }
+            };
+            runBackfill();
+        }
+    }, [round, whiteName, blackName, activePgn, activeIsLive, activeWhiteResult, activeBlackResult]); // Added activeBlackResult to deps
+
+    // Use the latest update timestamp for clock tick interpolation
+    const lastTickReference = fastUpdate?.lastUpdatedAt || liveGame?.lastUpdatedAt || new Date().toISOString();
+    const turnToMove = fastUpdate ? (fastUpdate.fen.split(' ')[1] as 'w' | 'b') : ((liveGame as any)?.turn || 'w');
+
+    // Ticker for Real-Time Clocks
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setNow(Date.now());
+        }, 1000);
+        return () => clearInterval(interval);
+    }, []);
+
+    const { whiteDisplay, blackDisplay } = useGameClock(
+        liveGame?.whiteClock || whiteClock || '',
+        liveGame?.blackClock || blackClock || '',
+        activeIsLive,
+        turnToMove,
+        lastTickReference,
+        now
+    );
+
+    // activeWhiteClock / activeBlackClock are now computed above via hook + fast path overrides
+    // But useGameClock returns the *interpolated* string.
+    // The previous code reassigned them to `activeWhiteClock`.
+    // Let's keep variable naming consistent.
+    const displayWhiteClock = whiteDisplay;
+    const displayBlackClock = blackDisplay;
+
+    const [menuDropdownVisible, setMenuDropdownVisible] = useState(false);
+    const [aboutModalVisible, setAboutModalVisible] = useState(false);
+    const [isGameSaved, setIsGameSaved] = useState(false);
+    const [isBoardFlipped, setIsBoardFlipped] = useState(false);
+    const [isLiveMode, setIsLiveMode] = useState(true);
+    const [parseRetryCount, setParseRetryCount] = useState(0);
+
+    // Variation State (Web-Parity)
+    // "Variation" = a manual branch starting from a specific ply.
+    // Supports multiple branches (lines) from the same anchor.
+    type VariationLine = {
+        id: string;             // Unique ID for the line
+        moves: Move[];          // Full list of moves for this line (from anchor)
+        fenHistory: string[];   // FENs corresponding to moves
+    };
+
+    type VariationRoot = {
+        anchorPly: number;      // The ply where the branch started (e.g. 24)
+        activeLineId: string;   // Currently active branch
+        lines: VariationLine[]; // List of all branches
+    };
+
+    const [variation, setVariation] = useState<VariationRoot | null>(null);
+
+    const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+    const [validMoves, setValidMoves] = useState<string[]>([]);
+
+    // Independent Chess instance for analysis/variation logic
+    const analysisChessRef = useRef(new Chess());
+
+    const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
+    const [showEval, setShowEval] = useState(false);
+    const [activeTab, setActiveTab] = useState<TabType>('notation');
+    const { width } = useWindowDimensions();
+    // Debug state for touch interaction
+
+
+    // TOAST STATE
+    const [toastState, setToastState] = useState<{ visible: boolean; data: PlayerData; anchor: LayoutRectangle | undefined }>({
+        visible: false,
+        data: { name: '' },
+        anchor: undefined
+    });
+    const toastTimerRef = useRef<NodeJS.Timeout | undefined>(undefined);
+
+    const openPlayerToast = useCallback((data: PlayerData, anchor: LayoutRectangle) => {
+        // 1. Clear existing
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+
+        // 2. Show new
+        setToastState({ visible: true, data, anchor });
+
+        // 3. Auto-hide
+        toastTimerRef.current = setTimeout(() => {
+            setToastState(prev => ({ ...prev, visible: false }));
+        }, 2500);
+    }, []);
+
+
+
+
+
+
+    const { history: gameHistory, lastPly, startFen, error: parseError } = useMemo(() => {
+        const cleanPgn = activePgn || '';
+
+        // 1. Check Cache (Instant Load)
+        const cached = MOVES_CACHE.get(gameId);
+        // Only use cache if we are not retrying
+        if (cached && cached.pgn === cleanPgn && cached.moves.length > 0 && parseRetryCount === 0) {
+            if (__DEV__) console.log(`[GAME_READY] id=${gameId} hasPgn=${!!cleanPgn} pgnLen=${cleanPgn.length} hadMovesBefore=true movesAfter=${cached.moves.length} (CACHED)`);
+            return {
+                history: cached.moves,
+                lastPly: cached.moves.length,
+                startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                error: undefined
+            };
+        }
+
+        // 2. Parse using robust utility
+        const parseResult = parsePgnToMainlineMoves(cleanPgn);
+
+        if (!parseResult.ok) {
+            if (cleanPgn.length > 0) {
+                const preview = cleanPgn.substring(0, 200).replace(/\n/g, ' ');
+                console.warn(`[GAME_PARSE_FAIL] id=${gameId} pgnLen=${cleanPgn.length} err=${parseResult.error} pgnPrefix=${preview}`);
+            }
+            return {
+                history: [],
+                lastPly: 0,
+                startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+                error: parseResult.error
+            };
+        }
+
+        // 3. Replay to generate FENs
+
+        const moves = parseResult.sanMoves; // string[]
+        const historyWithFen: Move[] = [];
+        const replay = new Chess();
+
+        moves.forEach((sanMove: string, index: number) => {
+            try {
+                const m = replay.move(sanMove);
+                if (m) {
+                    historyWithFen.push({
+                        ply: index + 1,
+                        san: m.san,
+                        fen: replay.fen(),
+                        from: m.from,
+                        to: m.to,
+                        color: m.color,
+                        moveNumber: Math.floor(index / 2) + 1,
+                    });
+                }
+            } catch (e) {
+                console.warn('Move replay error', sanMove, e);
+            }
+        });
+
+        // Update Cache (only if we have moves)
+        if (historyWithFen.length > 0) {
+            MOVES_CACHE.set(gameId, { pgn: cleanPgn, moves: historyWithFen });
+        }
+
+        if (__DEV__) {
+            console.log(`[GAME_READY] id=${gameId} hasPgn=${!!cleanPgn} pgnLen=${cleanPgn.length} hadMovesBefore=${!!cached} movesAfter=${historyWithFen.length}`);
+        }
+
+        return {
+            history: historyWithFen,
+            lastPly: historyWithFen.length,
+            startFen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+            error: undefined
+        };
+    }, [activePgn, gameId, parseRetryCount]);
+
+    // Sync isLiveMode with latest move
+    useEffect(() => {
+        if (isLiveMode) {
+            setCurrentMoveIndex(lastPly);
+        }
+    }, [isLiveMode, lastPly]);
+
+
+    // Effect: Reset variation when game changes
+    useEffect(() => {
+        setVariation(null);
+        setSelectedSquare(null);
+        setValidMoves([]);
+    }, [gameId]);
+
+    // Calculate display FEN based on currentMoveIndex
+    const displayFen = useMemo(() => {
+        // 1. If in variation territory (Variation active AND index > anchor)
+        if (variation && currentMoveIndex > variation.anchorPly) {
+            const activeLine = variation.lines.find(l => l.id === variation.activeLineId);
+            if (activeLine) {
+                const relIndex = currentMoveIndex - variation.anchorPly - 1; // 0-based index in variation
+                if (relIndex >= 0 && relIndex < activeLine.fenHistory.length) {
+                    return activeLine.fenHistory[relIndex];
+                }
+            }
+        }
+
+        // 2. Default: Main game history
+        if (currentMoveIndex === 0) return startFen;
+        // Safety: ensure history index is valid
+        if (currentMoveIndex <= gameHistory.length) {
+            return gameHistory[currentMoveIndex - 1]?.fen || startFen;
+        }
+
+        // Fallback
+        return startFen;
+    }, [currentMoveIndex, gameHistory, startFen, variation]);
+
+    // Calculate displayed last move (UCI) for highlighting
+    const displayedLastMove = useMemo(() => {
+        // 1. Variation move
+        if (variation && currentMoveIndex > variation.anchorPly) {
+            const activeLine = variation.lines.find(l => l.id === variation.activeLineId);
+            if (activeLine) {
+                const relIndex = currentMoveIndex - variation.anchorPly - 1;
+                if (relIndex >= 0) {
+                    const manualMove = activeLine.moves[relIndex];
+                    return manualMove ? (manualMove.from + manualMove.to) : undefined;
+                }
+            }
+        }
+
+        // 2. Main history move (or anchor move if we are AT the anchor but not deep in variation yet?)
+        // If currentMoveIndex matches anchorPly, we show the move that led to that state.
+        if (currentMoveIndex > 0) {
+            const move = gameHistory[currentMoveIndex - 1]; // Main history
+            if (move && move.from && move.to) {
+                return move.from + move.to;
+            }
+        }
+        return undefined;
+    }, [currentMoveIndex, gameHistory, variation]);
+
+    // Navigation handlers
+    const handleJumpToMove = (ply: number) => {
+        setIsLiveMode(false);
+        setCurrentMoveIndex(ply);
+        setSelectedSquare(null);
+        setValidMoves([]);
+    };
+
+    // NEW: Handle jumping to a specific variation line
+    // If user taps a move in a specific line, we must set that line as active
+    const handleJumpToVariationMove = (lineId: string, ply: number) => {
+        setVariation(prev => {
+            if (!prev) return null;
+            return {
+                ...prev,
+                activeLineId: lineId
+            };
+        });
+        setIsLiveMode(false);
+        setCurrentMoveIndex(ply);
+        setSelectedSquare(null);
+        setValidMoves([]);
+    };
+
+    const clearVariation = () => {
+        setVariation(null);
+        setSelectedSquare(null);
+        setValidMoves([]);
+    };
+
+    // Handle Square Press (Tap-to-move)
+    const handleMove = (from: string, to: string) => {
+        console.log('handleMove called', from, to);
+
+        // 1. Initialize Chess instance with current display FEN
+        try {
+            if (analysisChessRef.current.fen() !== displayFen) {
+                analysisChessRef.current.load(displayFen);
+            }
+        } catch (e) { /* fallback */ }
+
+        const chess = analysisChessRef.current;
+
+        try {
+            const move = chess.move({ from, to, promotion: 'q' });
+
+            if (move) {
+                console.log('Move successful', move.san);
+                const newFen = chess.fen();
+                const newSan = move.san;
+
+                setIsLiveMode(false);
+                setSelectedSquare(null);
+                setValidMoves([]);
+                soundManager.playMove(move.flags.includes('c') ? 'capture' : 'move' as any);
+
+                // 2. State Update: Variation
+                setVariation(prev => {
+                    const newId = Date.now().toString(); // Simple ID generation
+                    const absolutePly = currentMoveIndex + 1; // The ply index AFTER this move is made
+
+                    const newMoveObj = {
+                        ply: absolutePly,
+                        san: newSan,
+                        uci: move.from + move.to,
+                        fen: newFen,
+                        from: move.from,
+                        to: move.to,
+                        color: move.color,
+                        moveNumber: Math.floor((absolutePly - 1) / 2) + 1,
+                    } as unknown as Move;
+
+                    if (!prev) {
+                        // Scenario A: Starting a NEW variation root (Line 0)
+                        setCurrentMoveIndex(absolutePly);
+                        return {
+                            anchorPly: currentMoveIndex,
+                            activeLineId: newId,
+                            lines: [{
+                                id: newId,
+                                moves: [newMoveObj],
+                                fenHistory: [newFen]
+                            }]
+                        };
+                    } else {
+                        // Scenario B: Extending existing variation structure
+                        // Find current active line to determine context
+                        const activeLine = prev.lines.find(l => l.id === prev.activeLineId);
+
+                        // Calculate where we are relative to the anchor
+                        const currentRelIndex = currentMoveIndex - prev.anchorPly;
+
+                        // CHECK DEDUPE:
+                        // Before creating/branching, check if an existing line ALREADY has this move at this position.
+                        // We are looking for a line where:
+                        // 1. It shares the same prefix moves (up to currentRelIndex) as the active line (or empty if at anchor)
+                        // 2. Its move at [currentRelIndex] matches newSan.
+
+                        // Get prefix moves from active line (if any)
+                        const prefixMoves = activeLine ? activeLine.moves.slice(0, currentRelIndex) : [];
+
+                        const existingLine = prev.lines.find(line => {
+                            // Must be at least long enough to contain the new move
+                            if (line.moves.length <= currentRelIndex) return false;
+
+                            // Check specific move match
+                            if (line.moves[currentRelIndex].san !== newSan) return false;
+
+                            // Check prefix match (ensure we are branching from same point)
+                            // Optimization: If currentRelIndex is 0 (at anchor), prefix is empty, always matches.
+                            if (currentRelIndex === 0) return true;
+
+                            // Compare prefixes
+                            for (let i = 0; i < currentRelIndex; i++) {
+                                if (line.moves[i].san !== prefixMoves[i].san) return false;
+                            }
+                            return true;
+                        });
+
+                        if (existingLine) {
+                            // FOUND DUPLICATE/EXISTING BRANCH
+                            // Switch to it instead of creating new
+                            console.log('Deduped: Switching to existing line', existingLine.id);
+                            setCurrentMoveIndex(absolutePly);
+                            return {
+                                ...prev,
+                                activeLineId: existingLine.id
+                            };
+                        }
+
+                        // If no duplicate found, proceed to Append or Branch
+
+                        if (activeLine) {
+                            const lineEndPly = prev.anchorPly + activeLine.moves.length;
+
+                            if (currentMoveIndex === lineEndPly) {
+                                // APPEND to current line
+                                const updatedLine = {
+                                    ...activeLine,
+                                    moves: [...activeLine.moves, newMoveObj],
+                                    fenHistory: [...activeLine.fenHistory, newFen]
+                                };
+
+                                setCurrentMoveIndex(absolutePly);
+                                return {
+                                    ...prev,
+                                    lines: prev.lines.map(l => l.id === prev.activeLineId ? updatedLine : l)
+                                };
+                            } else {
+                                // BRANCH from inside current line
+                                const relIndex = currentMoveIndex - prev.anchorPly;
+                                const prefixMoves = activeLine.moves.slice(0, relIndex);
+                                const prefixFens = activeLine.fenHistory.slice(0, relIndex);
+
+                                const newLine: VariationLine = {
+                                    id: newId,
+                                    moves: [...prefixMoves, newMoveObj],
+                                    fenHistory: [...prefixFens, newFen]
+                                };
+
+                                setCurrentMoveIndex(absolutePly);
+                                return {
+                                    ...prev,
+                                    activeLineId: newId,
+                                    lines: [...prev.lines, newLine]
+                                };
+                            }
+                        }
+
+                        // Fallback (should not happen if activeLine logic holds)
+                        return prev;
+                    }
+                });
+
+            } else {
+                console.log('Move failed in chess.js');
+            }
+        } catch (e) {
+            console.log('Move exception', e);
+        }
+    };
+
+    // ... handleSquarePress ... (omitted, assuming it uses handleMove)
+
+    // Handle Square Press
+    const handleSquarePress = (square: string) => {
+        // If we already have a selection
+        if (selectedSquare) {
+            // Case 1: Tapping the SAME square -> Deselect
+            if (selectedSquare === square) {
+                setSelectedSquare(null);
+                setValidMoves([]);
+                return;
+            }
+
+            // Case 2: Tapping a VALID TARGET square -> Move
+            // We use the pre-calculated validMoves for reliability
+            if (validMoves.includes(square)) {
+                handleMove(selectedSquare, square);
+                return;
+            }
+
+            // Case 3: Tapping a DIFFERENT piece (that might be own color) or Invalid Square
+            // If it's a piece of our color, select it. otherwise deselect.
+            // We reuse selectPiece logic which handles color checking.
+            selectPiece(square);
+        } else {
+            // Case 4: No selection -> Try to select
+            selectPiece(square);
+        }
+    };
+
+    const selectPiece = (square: string) => {
+        const chess = analysisChessRef.current;
+
+        // Ensure chess instance is loaded with current display FEN
+        // We do this every time to be safe across history jumps
+        if (chess.fen() !== displayFen) {
+            try {
+                chess.load(displayFen);
+            } catch (e) {
+                console.warn('Failed to load displayFen for selection', displayFen);
+                return;
+            }
+        }
+
+        const piece = chess.get(square as any);
+
+        // Only allow selecting own pieces
+        if (piece && piece.color === chess.turn()) {
+            setSelectedSquare(square);
+            const moves = chess.moves({ square: square as any, verbose: true });
+            setValidMoves(moves.map(m => m.to));
+        } else {
+            setSelectedSquare(null);
+            setValidMoves([]);
+        }
+    };
+
+    // Determine side to move from FEN (default is white if FEN parsing fails)
+    const sideToMove = displayFen.split(' ')[1] === 'b' ? 'black' : 'white';
+
+    // Calculate board size
+    const SCREEN_PADDING = 32;
+    const MIN_BOARD_SIZE = 250;
+    const MAX_BOARD_SIZE = 500;
+    // Reduce board size when eval bar is shown to create space for wider bar
+    const EVAL_BAR_SPACE = showEval ? 24 : 0;
+    const boardSize = Math.max(MIN_BOARD_SIZE, Math.min(width - SCREEN_PADDING - EVAL_BAR_SPACE, MAX_BOARD_SIZE));
+
+    // Determine result string
+
+    let gameResult = '—'; // Default em dash
+    if (!activeIsLive) {
+        if (activeWhiteResult && activeBlackResult) {
+            gameResult = `${activeWhiteResult}—${activeBlackResult}`;
+        } else if (activeWhiteResult) {
+            gameResult = activeWhiteResult.replace('-', '—'); // Fallback if strictly combined string
+        } else if (activeBlackResult) {
+            gameResult = activeBlackResult.replace('-', '—');
+        }
+    }
+
+    const handleSaveGame = () => {
+        setIsGameSaved(!isGameSaved);
+        setMenuDropdownVisible(false);
+        Alert.alert(
+            isGameSaved ? 'Game Unsaved' : 'Game Saved',
+            isGameSaved ? 'Game removed from saved games' : 'Game added to saved games'
+        );
+    };
+
+    return (
+        <View style={styles.container}>
+            <StatusBar style="light" />
+
+            {/* Header */}
+            <View style={styles.header}>
+                {/* Left: Hamburger Icon */}
+                <TouchableOpacity
+                    style={styles.iconButton}
+                    onPress={() => Alert.alert('Navigation', 'Hamburger menu coming soon')}
+                >
+                    <Ionicons name="menu" size={24} color="#fff" />
+                </TouchableOpacity>
+
+                {/* Center: 2-row title (no truncation) */}
+                <View style={styles.headerCenter}>
+                    <Text style={styles.headerTitle1}>
+                        Tata Steel Chess
+                    </Text>
+                    <Text style={styles.headerTitle2}>
+                        Tournament 2026 • Round {round}
+                    </Text>
+                </View>
+
+                {/* Right: Video Icon + Menu */}
+                <View style={styles.headerRight}>
+                    <TouchableOpacity
+                        style={styles.iconButtonCompact}
+                        onPress={() => Alert.alert('Broadcast', 'Broadcast view coming soon')}
+                    >
+                        <Ionicons name="videocam" size={22} color="#fff" />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={styles.iconButtonCompact}
+                        onPress={() => setMenuDropdownVisible(true)}
+                    >
+                        <Ionicons name="ellipsis-vertical" size={20} color="#fff" />
+                    </TouchableOpacity>
+                </View>
+            </View>
+
+            {/* Menu Dropdown */}
+            <Modal
+                visible={menuDropdownVisible}
+                transparent={true}
+                animationType="fade"
+                onRequestClose={() => setMenuDropdownVisible(false)}
+            >
+                <Pressable
+                    style={styles.modalOverlay}
+                    onPress={() => setMenuDropdownVisible(false)}
+                >
+                    <View style={styles.dropdown}>
+
+
+                        <TouchableOpacity
+                            style={styles.dropdownItem}
+                            onPress={() => {
+                                setMenuDropdownVisible(false);
+                                navigation.navigate('Settings');
+                            }}
+                        >
+                            <Ionicons name="settings-outline" size={18} color="#fff" style={styles.menuIcon} />
+                            <Text style={styles.dropdownItemText}>Settings</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.dropdownItem}
+                            onPress={() => {
+                                setMenuDropdownVisible(false);
+                                Alert.alert('Share Link', 'Share game link coming soon');
+                            }}
+                        >
+                            <Ionicons name="link-outline" size={18} color="#fff" style={styles.menuIcon} />
+                            <Text style={styles.dropdownItemText}>Share game link</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.dropdownItem}
+                            onPress={() => {
+                                setMenuDropdownVisible(false);
+                                Alert.alert('Share PGN', 'Share game PGN coming soon');
+                            }}
+                        >
+                            <Ionicons name="document-text-outline" size={18} color="#fff" style={styles.menuIcon} />
+                            <Text style={styles.dropdownItemText}>Share game PGN</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.dropdownItem}
+                            onPress={handleSaveGame}
+                        >
+                            <Ionicons
+                                name={isGameSaved ? "heart" : "heart-outline"}
+                                size={18}
+                                color="#fff"
+                                style={styles.menuIcon}
+                            />
+                            <Text style={styles.dropdownItemText}>Save game</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.dropdownItem}
+                            onPress={() => {
+                                setMenuDropdownVisible(false);
+                                navigation.navigate('Help');
+                            }}
+                        >
+                            <Ionicons name="help-circle-outline" size={18} color="#fff" style={styles.menuIcon} />
+                            <Text style={styles.dropdownItemText}>Help</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.dropdownItem, styles.dropdownItemLast]}
+                            onPress={() => {
+                                setMenuDropdownVisible(false);
+                                setAboutModalVisible(true);
+                            }}
+                        >
+                            <Ionicons name="information-circle-outline" size={18} color="#fff" style={styles.menuIcon} />
+                            <Text style={styles.dropdownItemText}>About</Text>
+                        </TouchableOpacity>
+                    </View>
+                </Pressable>
+            </Modal>
+
+            {/* About Modal */}
+            <AboutModal
+                visible={aboutModalVisible}
+                onClose={() => setAboutModalVisible(false)}
+                onFeedback={() => navigation.navigate('Help')}
+            />
+
+            {/* Game Content: White Player → Board → Player-to-Move → Controls */}
+            <View style={styles.content}>
+                {/* Player Strip - Consolidating both players above board */}
+                <PlayerStrip
+                    whiteName={whiteName}
+                    whiteTitle={whiteTitle}
+                    whiteFederation={whiteFederation}
+                    whiteRating={whiteRating}
+                    whiteClock={activeWhiteClock}
+                    blackName={blackName}
+                    blackTitle={blackTitle}
+                    blackFederation={blackFederation}
+                    blackRating={blackRating}
+                    blackClock={activeBlackClock}
+                    result={gameResult}
+                    onPlayerPress={openPlayerToast}
+                />
+
+                {/* Chess Board + Eval Bar */}
+                <View style={styles.boardContainer}>
+                    <View style={styles.boardWithEval}>
+                        <MiniBoard
+                            fen={displayFen}
+                            size={boardSize}
+                            lastMove={displayedLastMove}
+                            flipped={isBoardFlipped}
+                            onSquarePress={handleSquarePress}
+                            onMove={handleMove}
+                            selectedSquare={selectedSquare}
+                            validMoves={validMoves}
+                        />
+
+
+
+                        {/* Eval Bar - conditionally visible */}
+                        {showEval && (
+                            <View style={styles.evalBarContainer}>
+                                <EvalBar
+                                    evalCp={activeEvalCp}
+                                    height={boardSize}
+                                    flipped={isBoardFlipped}
+                                />
+                            </View>
+                        )}
+                    </View>
+                </View>
+
+                {/* Removed bottom PlayerRow as strictly requested to consolidate top area. 
+                    If user wanted to keep it, we would uncomment this, but visual design implies replacement. 
+                */}
+
+                {/* Game Controls Bar */}
+                <View style={styles.controlsBar}>
+                    {/* Left: Evaluation Gauge (with larger gap after) */}
+                    <TouchableOpacity
+                        style={[
+                            styles.controlButton,
+                            showEval && styles.controlButtonActive
+                        ]}
+                        onPress={() => setShowEval(!showEval)}
+                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    >
+                        <Activity size={18} color="#fff" />
+                    </TouchableOpacity>
+
+                    {/* Center: Navigation Controls (tight cluster) */}
+                    <View style={styles.navigationControls}>
+                        <TouchableOpacity
+                            style={styles.controlButton}
+                            onPress={() => {
+                                if (currentMoveIndex > 0) {
+                                    setCurrentMoveIndex(currentMoveIndex - 1);
+                                    setIsLiveMode(false);
+                                }
+                            }}
+                            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                        >
+                            <Ionicons name="chevron-back" size={18} color="#fff" />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[
+                                styles.livePill,
+                                (currentMoveIndex === lastPly) && styles.livePillAtLive
+                            ]}
+                            onPress={() => {
+                                // Jump to latest position AND clear manual/local moves
+                                setIsLiveMode(true);
+                                clearVariation();
+                                setCurrentMoveIndex(lastPly);
+                            }}
+                        >
+                            <Text style={[
+                                styles.liveText,
+                                (currentMoveIndex === lastPly) && styles.liveTextAtLive
+                            ]}>LIVE</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={styles.controlButton}
+                            onPress={() => {
+                                // Determine max index based on whether we are in a variation
+                                let maxIdx = lastPly;
+                                if (variation) {
+                                    const activeLine = variation.lines.find(l => l.id === variation.activeLineId);
+                                    if (activeLine) {
+                                        maxIdx = variation.anchorPly + activeLine.moves.length;
+                                    }
+                                }
+
+                                // Guard: prevent wrapping past the last move
+                                if (currentMoveIndex >= maxIdx) return;
+
+                                setCurrentMoveIndex(currentMoveIndex + 1);
+                                setIsLiveMode(false);
+                            }}
+                            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                        >
+                            <Ionicons name="chevron-forward" size={18} color="#fff" />
+                        </TouchableOpacity>
+                    </View>
+
+                    {/* Right: Flip Board (with larger gap before) */}
+                    <TouchableOpacity
+                        style={styles.controlButton}
+                        onPress={() => setIsBoardFlipped(!isBoardFlipped)}
+                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    >
+                        <Ionicons name="reload-outline" size={18} color="#fff" />
+                    </TouchableOpacity>
+                </View>
+
+                {/* Tabs */}
+                <GameTabs activeTab={activeTab} onTabChange={setActiveTab} />
+
+                {/* Tab Content Placeholder */}
+                <View style={styles.tabContent}>
+                    {activeTab === 'notation' && (
+                        parseError ? (
+                            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+                                <Text style={{ color: broadcastTheme.colors.slate400, marginBottom: 12, textAlign: 'center' }}>
+                                    Unable to parse moves
+                                </Text>
+                                <TouchableOpacity
+                                    onPress={() => setParseRetryCount(c => c + 1)}
+                                    style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 6 }}
+                                >
+                                    <Text style={{ color: '#fff', fontWeight: '600' }}>Retry Parsing</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : (
+                            <NotationView
+                                moves={gameHistory as Move[]}
+                                currentPly={currentMoveIndex}
+                                onJumpToMove={handleJumpToMove}
+                                variation={variation}
+                                onClearVariation={clearVariation}
+                                onJumpToVariationMove={handleJumpToVariationMove}
+                            />
+                        )
+                    )}
+                    {activeTab === 'engine' && (
+                        <EngineView fen={displayFen} isLiveMode={activeIsLive} />
+                    )}
+                    {activeTab === 'commentary' && (
+                        <Text style={styles.placeholderText}>Live Commentary Feed</Text>
+                    )}
+                </View>
+            </View>
+
+            <PlayerProfileToast
+                visible={toastState.visible}
+                data={toastState.data}
+                anchorLayout={toastState.anchor}
+            />
+        </View>
+    );
+}
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: broadcastTheme.colors.background,
+    },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingTop: 44,
+        paddingBottom: 12,
+        paddingHorizontal: 16,
+        backgroundColor: broadcastTheme.colors.background,
+        borderBottomWidth: 1,
+        borderBottomColor: broadcastTheme.colors.borderDefault,
+    },
+    headerCenter: {
+        flex: 1,
+        marginHorizontal: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    headerTitle1: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: broadcastTheme.colors.slate50,
+        textAlign: 'center',
+    },
+    headerTitle2: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: broadcastTheme.colors.slate50,
+        textAlign: 'center',
+        marginTop: 2,
+    },
+    headerRight: {
+        flexDirection: 'row',
+        gap: 4,
+        alignItems: 'center',
+    },
+    iconButton: {
+        width: 40,
+        height: 40,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    iconButtonCompact: {
+        width: 32,
+        height: 40,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        justifyContent: 'flex-start',
+        alignItems: 'flex-end',
+        paddingTop: 100,
+        paddingRight: 16,
+    },
+    dropdown: {
+        backgroundColor: broadcastTheme.colors.slate900,
+        borderRadius: broadcastTheme.radii.lg,
+        borderWidth: 1,
+        borderColor: broadcastTheme.colors.borderDefault,
+        minWidth: 200,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 8,
+    },
+    dropdownItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 14,
+        paddingHorizontal: 16,
+        borderBottomWidth: 1,
+        borderBottomColor: broadcastTheme.colors.borderDefault,
+    },
+    dropdownItemLast: {
+        borderBottomWidth: 0,
+    },
+    menuIcon: {
+        marginRight: 12,
+    },
+    dropdownItemText: {
+        fontSize: 14,
+        fontWeight: '500',
+        color: broadcastTheme.colors.slate50,
+    },
+    menuRow: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    content: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'flex-start',
+        padding: 12,
+        paddingTop: 8,
+    },
+    playerRowContainer: {
+        width: '100%',
+        alignItems: 'center',
+        paddingVertical: 4,
+    },
+    playerToMoveContainer: {
+        width: '100%',
+        alignItems: 'center',
+        paddingVertical: 2,
+        paddingTop: 6,
+    },
+    boardContainer: {
+        marginTop: 8,
+        marginBottom: 5, // Reduced from 8
+        borderRadius: broadcastTheme.radii.lg,
+        overflow: 'visible', // Allow eval bar to show
+    },
+    boardWithEval: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2, // Reduced gap (from 8) to bring board and bar close
+        borderRadius: broadcastTheme.radii.lg,
+        // overflow: 'hidden', // Removed to allow eval label to show fully
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 8,
+    },
+    evalBarContainer: {
+        opacity: 1,
+        marginLeft: 0, // Removed extra spacing
+    },
+    // Player row styles (matching tournament cards)
+    playerRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        width: '100%',
+    },
+    playerInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        flex: 1,
+        minWidth: 0,
+    },
+    flag: {
+        fontSize: 13,
+        lineHeight: 15,
+    },
+    playerName: {
+        fontSize: 15,
+        fontWeight: '600',
+        color: broadcastTheme.colors.slate50,
+        flex: 1,
+        minWidth: 50,
+    },
+    rating: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: broadcastTheme.colors.slate400,
+    },
+    displayValue: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: broadcastTheme.colors.sky400,
+        fontVariant: ['tabular-nums'],
+        marginLeft: 8,
+    },
+    // Game Controls Bar
+    controlsBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        paddingVertical: 10, // Reduced from 12 (overall 25% gap reduction)
+        paddingHorizontal: 16,
+        backgroundColor: broadcastTheme.colors.background,
+        width: '100%',
+        gap: 16,
+    },
+    controlButton: {
+        width: 36, // Scaled down from 44 (~20%)
+        height: 36,
+        borderRadius: 18,
+        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    controlButtonActive: {
+        backgroundColor: 'rgba(5, 150, 105, 0.3)', // emerald-600/30
+        borderColor: 'rgba(16, 185, 129, 0.4)', // emerald-500
+    },
+    navigationControls: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6, // Tightened gap for unified group feel (was 8)
+        flex: 1,
+        justifyContent: 'center',
+    },
+    livePill: {
+        height: 36, // Match button height (was 44)
+        paddingHorizontal: 12, // Slightly reduced padding
+        borderRadius: 18, // Match button radius
+        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+        borderWidth: 1,
+        borderColor: 'rgba(52, 211, 153, 0.4)', // emerald-400
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: 60, // Reduced minWidth (was 70)
+    },
+    livePillAtLive: {
+        backgroundColor: 'rgba(30, 41, 59, 0.4)', // slate-800
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+    },
+    liveText: {
+        fontSize: 12, // Scaled down slightly (was 13)
+        fontWeight: '700',
+        color: '#34d399', // emerald-400
+        letterSpacing: 0.5,
+    },
+    liveTextAtLive: {
+        color: broadcastTheme.colors.slate400,
+    },
+    tabContent: {
+        flex: 1,
+        width: '100%',
+        justifyContent: 'flex-start',
+        padding: 0, // Remove padding to allow child to handle it
+    },
+    placeholderText: {
+        color: premiumTheme.colors.textSecondary,
+        fontSize: 14,
+        fontStyle: 'italic',
+    },
+    // NEW Player Strip Styles
+    playerStrip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        width: '100%',
+        paddingHorizontal: 12,
+        paddingBottom: 4, // Tighter spacing to board
+    },
+    stripPlayerBlock: {
+        flex: 1,
+        minWidth: 0, // CRITICAL: Allow shrinking below content size to force truncation
+        overflow: 'hidden', // CRITICAL: Prevent ANY content from bleeding out
+        gap: 0,
+    },
+    alignLeft: {
+        alignItems: 'flex-start',
+        paddingRight: 4, // Reduced padding to give more space
+    },
+    alignRight: {
+        alignItems: 'flex-end',
+        paddingLeft: 4, // Reduced padding to give more space
+    },
+    stripNameRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        width: '100%',
+        height: 20, // Fixed height for alignment
+    },
+    stripName: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: broadcastTheme.colors.slate50,
+        flexShrink: 1,
+        lineHeight: 18,
+    },
+    stripFlag: {
+        fontSize: 14,
+        lineHeight: 18,
+    },
+    stripFlagPlaceholder: {
+        width: 14,
+        height: 14,
+        borderRadius: 7,
+        backgroundColor: broadcastTheme.colors.slate700,
+    },
+    stripStatsRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        height: 18, // Fixed height for alignment
+    },
+    stripRating: {
+        fontSize: 11,
+        fontWeight: '500',
+        color: broadcastTheme.colors.slate400,
+        lineHeight: 16,
+    },
+    stripTime: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: broadcastTheme.colors.slate300,
+        fontVariant: ['tabular-nums'],
+        lineHeight: 16,
+    },
+    stripCenter: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: 52,
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        backgroundColor: 'rgba(255, 255, 255, 0.05)',
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+        marginHorizontal: 4,
+        flexShrink: 0, // CRITICAL: Never shrink pill
+        flexGrow: 0,    // CRITICAL: Never grow pill unwantedly
+        zIndex: 10,     // CRITICAL: Ensure it sits on top if anything fails
+        elevation: 10,  // Android zIndex equivalent
+    },
+    stripCenterText: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: broadcastTheme.colors.slate200,
+        fontVariant: ['tabular-nums'],
+    },
+});

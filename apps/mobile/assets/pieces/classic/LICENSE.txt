@@ -1,0 +1,13 @@
+Chess Piece PNG Assets
+
+Source: Wikimedia Commons
+URL: https://commons.wikimedia.org/wiki/Category:PNG_chess_pieces/Standard_transparent
+Author: Colin M.L. Burnett (Cburnett)
+License: Creative Commons Attribution-Share Alike 3.0 Unported (CC BY-SA 3.0)
+License URL: https://creativecommons.org/licenses/by-sa/3.0/
+
+Files:
+- wK.png, wQ.png, wR.png, wB.png, wN.png, wP.png (White pieces)
+- bK.png, bQ.png, bR.png, bB.png, bN.png, bP.png (Black pieces)
+
+All files are used under the Creative Commons Attribution-Share Alike 3.0 Unported license.
